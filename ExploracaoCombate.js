@@ -1,28 +1,6 @@
 /**
  * @file ExploracaoCombate.js
- * @description Cena de exploração e combate do jogo.
- *
- * Mecânicas principais:
- *  - Jogador (quadrado ciano) se move com as setas do teclado
- *  - Obstáculos estáticos (magenta) bloqueiam a passagem de todos os corpos
- *  - Inimigos (quadrados vermelhos) quicam pelas paredes e pelos obstáculos
- *  - Moedas (quadrados amarelos) aparecem em posições seguras e respawnam
- *    quando todas são coletadas
- *  - Encostar em um inimigo reinicia a cena
- *  - ESC volta para o HubCentral via cena de Loading
- *
- * Correções aplicadas vs. versão anterior:
- *  1. obstacles: substituído staticGroup().create() por add.rectangle() +
- *     physics.add.existing(rect, true), que é o modo correto de criar
- *     obstáculos retangulares com física estática no Phaser 3.
- *  2. Phaser 4: removido refreshBody() (API exclusiva do Phaser 3, inexistente
- *     no Phaser 4). No Phaser 4, corpos estáticos já sincronizam a posição
- *     do GameObject automaticamente.
- *  3. moedas: substituído add.circle() por add.rectangle() porque corpos
- *     arcade não funcionam corretamente em primitivas de círculo do Phaser.
- *  4. colisões dos obstáculos: como obstacles agora é um array simples,
- *     as colisões são registradas via forEach.
- *  5. coordenadas: todas recalculadas para canvas 1920×920.
+ * @description Cena de exploração e combate (Client 100% Subordinado ao Server Node.js)
  */
 
 export class ExploracaoCombate extends Phaser.Scene {
@@ -31,271 +9,262 @@ export class ExploracaoCombate extends Phaser.Scene {
         super('ExploracaoCombate');
     }
 
-    // ─────────────────────────────────────────────────────────────────────────
-    // CREATE
-    // ─────────────────────────────────────────────────────────────────────────
-
     create() {
-
-        // ── 1. VARIÁVEIS BASE ─────────────────────────────────────────────────
-
-        /** @type {number} Pontuação acumulada pelo jogador nesta sessão. */
         this.score = 0;
+        this.physics.world.setBounds(0, 0, 2000, 2000);
+        this.cameras.main.setBounds(0, 0, 2000, 2000);
 
-        // HUD: linha de status e pontuação
-        this.add.text(10, 10, 'SISTEMA ONLINE - ESC para voltar', { color: '#00ff00' });
+        this.add.text(10, 10, 'SISTEMA ONLINE - ESC para voltar', { color: '#00ff00' }).setScrollFactor(0);
+        this.scoreText = this.add.text(10, 30, 'DADOS COLETADOS: 0', { color: '#ffff00', fontSize: '20px' }).setScrollFactor(0);
 
-        /**
-         * @type {Phaser.GameObjects.Text}
-         * Texto que exibe a pontuação em tempo real.
-         */
-        this.scoreText = this.add.text(10, 30, 'DADOS COLETADOS: 0', {
-            color: '#ffff00',
-            fontSize: '20px'
-        });
+        this.player = this.add.rectangle(1000, 1000, 40, 40, 0x00ffff);
+        this.physics.add.existing(this.player);
+        this.player.body.setCollideWorldBounds(true);
+        this.player.invulnerable = false;
+        
+        this.playerHpGraphics = this.add.graphics();
+        this.cameras.main.startFollow(this.player, true, 0.08, 0.08);
 
-
-        // ── 2. JOGADOR ────────────────────────────────────────────────────────
-
-        /**
-         * @type {Phaser.GameObjects.Rectangle}
-         * Quadrado ciano 40×40 px que representa o jogador.
-         * Recebe um corpo de física dinâmico via physics.add.existing().
-         */
-        this.player = this.add.rectangle(960, 460, 40, 40, 0x00ffff);
-        this.physics.add.existing(this.player);          // corpo dinâmico
-        this.player.body.setCollideWorldBounds(true);    // não sai da tela
-
-
-        // ── 3. OBSTÁCULOS ESTÁTICOS ───────────────────────────────────────────
-        //
-        // CORREÇÃO: staticGroup().create(x, y, texture) NÃO aceita parâmetros
-        // de largura/altura. A forma correta para obstáculos retangulares é:
-        //   add.rectangle(x, y, w, h, cor)  → cria o visual
-        //   physics.add.existing(rect, true) → adiciona corpo estático (true)
-        //
-        // Layout dos obstáculos (coordenadas em pixels, canvas 1920×920):
-        //
-        //   O conjunto forma um quadrado oco centralizado no canvas.
-        //   Centro do canvas: x=960, y=460
-        //
-        //          ┌──────────────────────────────────┐
-        //          │         [viga superior]          │
-        //          │  [pilar esq]    [pilar dir]      │
-        //          │         [viga inferior]          │
-        //          └──────────────────────────────────┘
-        //
-        //  x=660,  y=460  →  pilar esquerdo  (40 × 400)
-        //  x=1260, y=460  →  pilar direito   (40 × 400)
-        //  x=960,  y=260  →  viga superior   (640 × 40)
-        //  x=960,  y=660  →  viga inferior   (640 × 40)
-
-        /** @type {Phaser.GameObjects.Rectangle[]} Lista de obstáculos estáticos. */
-        this.obstacles = [];
-
-        const obstacleData = [
-            { x: 440,  y: 360, w: 10,  h: 400 },   // pilar esquerdo
-            { x: 360, y: 460, w: 40,  h: 100 },   // pilar direito
-            { x: 960,  y: 260, w: 640, h: 40  },   // viga superior
-            { x: 960,  y: 660, w: 640, h: 40  },   // viga inferior
-        ];
-
-        obstacleData.forEach(({ x, y, w, h }) => {
-            const rect = this.add.rectangle(x, y, w, h, 0xff00ff);
-            this.physics.add.existing(rect, true); // true = corpo estático
-            // Phaser 4: o corpo estático já sincroniza a posição automaticamente.
-            // refreshBody() era API do Phaser 3 e não existe no Phaser 4.
-            this.obstacles.push(rect);
-        });
-
-
-        // ── 4. INIMIGOS ───────────────────────────────────────────────────────
-
-        /**
-         * @type {Phaser.Physics.Arcade.Group}
-         * Grupo que contém todos os inimigos ativos.
-         * Cada inimigo é um quadrado vermelho 30×30 px com bounce = 1
-         * (quica sem perder velocidade) e colide com as bordas do mundo.
-         */
-        this.enemies = this.physics.add.group();
-
-        // Inimigo 1 — canto superior esquerdo, velocidade diagonal positiva
-        const enemy1 = this.add.rectangle(150, 150, 30, 30, 0xff0000);
-        this.physics.add.existing(enemy1);
-        enemy1.body
-            .setVelocity(150, 200)
-            .setBounce(1)
-            .setCollideWorldBounds(true);
-        this.enemies.add(enemy1);
-
-        // Inimigo 2 — canto inferior direito, velocidade diagonal negativa
-        const enemy2 = this.add.rectangle(1770, 770, 30, 30, 0xff0000);
-        this.physics.add.existing(enemy2);
-        enemy2.body
-            .setVelocity(-200, -150)
-            .setBounce(1)
-            .setCollideWorldBounds(true);
-        this.enemies.add(enemy2);
-
-
-        // ── 5. ITENS COLETÁVEIS ───────────────────────────────────────────────
-
-        /**
-         * @type {Phaser.Physics.Arcade.Group}
-         * Grupo que contém as moedas coletáveis (quadrados amarelos 20×20 px).
-         * Respawna automaticamente quando todas são coletadas.
-         */
-        this.items = this.physics.add.group();
-        this.spawnItems();
-
-
-        // ── 6. COLISÕES ───────────────────────────────────────────────────────
-        //
-        // Como obstacles é um array simples (não um grupo Phaser),
-        // precisamos registrar cada colisão individualmente via forEach.
-
-        this.obstacles.forEach(obs => {
-            this.physics.add.collider(this.player, obs);   // jogador bate na parede
-            this.physics.add.collider(this.enemies, obs);  // inimigos batem na parede
-        });
-
-        // Overlap: jogador coleta moeda ao encostar
-        this.physics.add.overlap(
-            this.player,
-            this.items,
-            this.collectItem,
-            null,
-            this
-        );
-
-        // Colisão letal: jogador encosta em inimigo → reinicia cena
-        this.physics.add.collider(
-            this.player,
-            this.enemies,
-            this.hitEnemy,
-            null,
-            this
-        );
-
-
-        // ── 7. CONTROLES ──────────────────────────────────────────────────────
-
-        /**
-         * @type {Phaser.Types.Input.Keyboard.CursorKeys}
-         * Teclas de seta para mover o jogador.
-         */
-        this.cursors = this.input.keyboard.createCursorKeys();
-
-        // ESC: retorna ao HubCentral via cena de transição Loading
-        this.input.keyboard.once('keydown-ESC', () => {
-            this.scene.start('Loading', { destino: 'HubCentral' });
-        });
-    }
-
-
-    // ─────────────────────────────────────────────────────────────────────────
-    // UPDATE  (loop principal — chamado ~60×/segundo)
-    // ─────────────────────────────────────────────────────────────────────────
-
-    update() {
-        // Zera a velocidade a cada frame para evitar deslizamento
-        this.player.body.setVelocity(0);
-
-        // Movimento horizontal
-        if (this.cursors.left.isDown) {
-            this.player.body.setVelocityX(-300);
-        } else if (this.cursors.right.isDown) {
-            this.player.body.setVelocityX(300);
-        }
-
-        // Movimento vertical
-        if (this.cursors.up.isDown) {
-            this.player.body.setVelocityY(-300);
-        } else if (this.cursors.down.isDown) {
-            this.player.body.setVelocityY(300);
-        }
-    }
-
-
-    // ─────────────────────────────────────────────────────────────────────────
-    // MÉTODOS AUXILIARES
-    // ─────────────────────────────────────────────────────────────────────────
-
-    /**
-     * Espalha até 4 moedas em posições pré-definidas e seguras.
-     *
-     * Algoritmo:
-     *  1. Embaralha a lista de posições candidatas.
-     *  2. Para cada candidata, calcula a distância até cada inimigo ativo.
-     *  3. Se nenhum inimigo estiver a menos de 80 px, cria a moeda ali.
-     *  4. Para quando 4 moedas forem criadas ou a lista se esgotar.
-     *
-     * CORREÇÃO: moedas agora são add.rectangle() (20×20 px) em vez de
-     * add.circle(), pois corpos arcade não funcionam corretamente em
-     * primitivas de círculo do Phaser 3.
-     */
-    spawnItems() {
-        // Posições candidatas distribuídas pelas bordas do mapa (canvas 1920×920)
-        const safePositions = [
-            { x: 150,  y: 150  }, { x: 960,  y: 80   }, { x: 1770, y: 150  },
-            { x: 150,  y: 460  }, { x: 1770, y: 460  },
-            { x: 150,  y: 770  }, { x: 960,  y: 840  }, { x: 1770, y: 770  },
-        ];
-
-        Phaser.Utils.Array.Shuffle(safePositions);
-
-        let moedasCriadas = 0;
-
-        for (let i = 0; i < safePositions.length && moedasCriadas < 4; i++) {
-            const pos = safePositions[i];
-            let muitoPerto = false;
-
-            // Verifica distância mínima de 80 px em relação a cada inimigo
-            this.enemies.getChildren().forEach(enemy => {
-                const distancia = Phaser.Math.Distance.Between(
-                    pos.x, pos.y,
-                    enemy.x, enemy.y
-                );
-                if (distancia < 80) {
-                    muitoPerto = true;
-                }
-            });
-
-            if (!muitoPerto) {
-                // Cria moeda como retângulo 20×20 (corpo arcade funciona corretamente)
-                const coin = this.add.rectangle(pos.x, pos.y, 20, 20, 0xffff00);
-                this.physics.add.existing(coin, false); // false = corpo dinâmico (necessário para overlap)
-                this.items.add(coin);
-                moedasCriadas++;
+        // ─────────────────────────────────────────────────────────────────
+        // SETUP MULTIPLAYER (DADOS LOCAIS ESPELHANDO O SERVIDOR)
+        // ─────────────────────────────────────────────────────────────────
+        this.otherPlayers = new Map();
+        this.enemyData = new Map();
+        this.itemData = new Map();
+        
+        this.enemiesGroup = this.physics.add.group();
+        this.itemsGroup = this.physics.add.group();
+        
+        // Colisões de Interação (Eventos enviados para o Servidor)
+        this.physics.add.overlap(this.player, this.itemsGroup, (p, itemSprite) => {
+            if (this.socket && this.socket.readyState === WebSocket.OPEN) {
+                this.socket.send(JSON.stringify({ type: 'pickup_item', itemId: itemSprite.serverId }));
+                // Oculta localmente (Client-side Prediction)
+                itemSprite.setVisible(false);
+                itemSprite.body.enable = false;
             }
+        });
+
+        this.physics.add.collider(this.player, this.enemiesGroup, (p, enemySprite) => {
+            if (!this.player.invulnerable && this.socket && this.socket.readyState === WebSocket.OPEN) {
+                this.socket.send(JSON.stringify({ type: 'attack_enemy', enemyId: enemySprite.serverId }));
+                
+                // Cooldown local para não flodar a rede
+                this.player.invulnerable = true;
+                this.time.delayedCall(500, () => this.player.invulnerable = false);
+                
+                // Knockback Visual
+                const angle = Phaser.Math.Angle.Between(enemySprite.x, enemySprite.y, p.x, p.y);
+                p.body.setVelocity(Math.cos(angle) * 500, Math.sin(angle) * 500);
+            }
+        });
+
+        this.cursors = this.input.keyboard.createCursorKeys();
+        this.input.keyboard.once('keydown-ESC', () => this.scene.start('Loading', { destino: 'HubCentral' }));
+
+        this.initMultiplayer();
+        
+        this.events.once('shutdown', () => {
+            this.input.keyboard.removeAllListeners('keydown-ESC');
+            this.playerHpGraphics.destroy();
+            this.enemyData.forEach(data => data.hpGraphics.destroy());
+            this.otherPlayers.forEach(rp => rp.hpGraphics.destroy());
+            if (this.socket) this.socket.close();
+        });
+    }
+
+    initMultiplayer() {
+        this.socket = new WebSocket('ws://localhost:8080');
+        this.socket.onopen = () => console.log('Conectado ao servidor autoritário!');
+
+        this.socket.onmessage = (event) => {
+            const data = JSON.parse(event.data);
+
+            // 1. CARREGAMENTO INICIAL DO MUNDO
+            if (data.type === 'welcome') {
+                this.myId = data.id;
+                this.playerStats = data.state.players[this.myId];
+                
+                for (const pid in data.state.players) {
+                    if (pid !== this.myId) this.spawnRemotePlayer(data.state.players[pid]);
+                }
+                for (const eid in data.state.enemies) this.spawnEnemy(data.state.enemies[eid]);
+                for (const iid in data.state.items) this.spawnItem(data.state.items[iid]);
+            }
+            // 2. OUTROS JOGADORES ENTRANDO/SAINDO
+            else if (data.type === 'player_joined') {
+                if (data.player.id !== this.myId) this.spawnRemotePlayer(data.player);
+            }
+            else if (data.type === 'player_left') {
+                if (this.otherPlayers.has(data.id)) {
+                    const rp = this.otherPlayers.get(data.id);
+                    rp.hpGraphics.destroy();
+                    rp.sprite.destroy();
+                    this.otherPlayers.delete(data.id);
+                }
+            }
+            // 3. COLETA DE ITENS
+            else if (data.type === 'item_despawned') {
+                if (data.playerId === this.myId) {
+                    this.score += 10;
+                    this.scoreText.setText('DADOS COLETADOS: ' + this.score);
+                }
+                if (this.itemData.has(data.itemId)) {
+                    this.itemData.get(data.itemId).destroy();
+                    this.itemData.delete(data.itemId);
+                }
+            }
+            // 3.5. RESPAWN DE ITENS
+            else if (data.type === 'items_respawned') {
+                for (const iid in data.items) {
+                    this.spawnItem(data.items[iid]);
+                }
+            }
+            // 4. RESULTADO DE COMBATE (HP UPDATE)
+            else if (data.type === 'combat_event') {
+                if (data.playerId === this.myId) {
+                    this.playerStats.hp_atual = data.player_hp;
+                } else if (this.otherPlayers.has(data.playerId)) {
+                    this.otherPlayers.get(data.playerId).hp_atual = data.player_hp;
+                }
+                if (this.enemyData.has(data.enemyId)) {
+                    this.enemyData.get(data.enemyId).hp_atual = data.enemy_hp;
+                }
+            }
+            // 5. EVENTOS DE MORTE
+            else if (data.type === 'enemy_died') {
+                if (data.killerId === this.myId) {
+                    this.score += 50;
+                    this.scoreText.setText('DADOS COLETADOS: ' + this.score);
+                }
+                if (this.enemyData.has(data.enemyId)) {
+                    const e = this.enemyData.get(data.enemyId);
+                    e.hpGraphics.destroy();
+                    e.sprite.destroy();
+                    this.enemyData.delete(data.enemyId);
+                }
+            }
+            else if (data.type === 'player_died') {
+                if (data.playerId === this.myId) {
+                    this.scene.restart(); // Renasce (FSM trata o shutdown)
+                } else if (this.otherPlayers.has(data.playerId)) {
+                    const rp = this.otherPlayers.get(data.playerId);
+                    rp.hpGraphics.destroy();
+                    rp.sprite.destroy();
+                    this.otherPlayers.delete(data.playerId);
+                }
+            }
+            // 6. SYNC DE POSIÇÕES (20Hz)
+            else if (data.type === 'state_update') {
+                // Players Remotos
+                for (const pid in data.players) {
+                    if (pid !== this.myId && this.otherPlayers.has(pid)) {
+                        const rp = this.otherPlayers.get(pid);
+                        rp.targetX = data.players[pid].x;
+                        rp.targetY = data.players[pid].y;
+                    }
+                }
+                // Inimigos Controlados pelo Servidor
+                for (const eid in data.enemies) {
+                    if (this.enemyData.has(eid)) {
+                        const e = this.enemyData.get(eid);
+                        e.targetX = data.enemies[eid].x;
+                        e.targetY = data.enemies[eid].y;
+                    }
+                }
+            }
+        };
+    }
+
+    // ─────────────────────────────────────────────────────────────────
+    // FUNÇÕES DE SPAWN (RENDERIZAÇÃO LOCAL)
+    // ─────────────────────────────────────────────────────────────────
+    spawnRemotePlayer(state) {
+        const sprite = this.add.rectangle(state.x, state.y, 40, 40, 0x0000ff);
+        this.otherPlayers.set(state.id, {
+            sprite: sprite, targetX: state.x, targetY: state.y,
+            hp_atual: state.hp_atual, hp_max: state.hp_max, hpGraphics: this.add.graphics()
+        });
+    }
+
+    spawnEnemy(state) {
+        const sprite = this.add.rectangle(state.x, state.y, 30, 30, 0xff0000);
+        this.physics.add.existing(sprite);
+        sprite.body.setImmovable(true); // O Cliente não empurra fisicamente o inimigo
+        sprite.serverId = state.id;
+        this.enemiesGroup.add(sprite);
+        this.enemyData.set(state.id, {
+            sprite: sprite, targetX: state.x, targetY: state.y,
+            hp_atual: state.hp_atual, hp_max: state.hp_max, hpGraphics: this.add.graphics()
+        });
+    }
+
+    spawnItem(state) {
+        const sprite = this.add.rectangle(state.x, state.y, 20, 20, 0xffff00);
+        this.physics.add.existing(sprite, false);
+        sprite.serverId = state.id;
+        this.itemsGroup.add(sprite);
+        this.itemData.set(state.id, sprite);
+    }
+
+    // ─────────────────────────────────────────────────────────────────
+    // LOOP PRINCIPAL (60Hz)
+    // ─────────────────────────────────────────────────────────────────
+    update() {
+        if (!this.playerStats) return; // Espera o handshake do server
+
+        // 1. Movimentação Local Predita (SÓ PERMITE SE NÃO ESTIVER EM KNOCKBACK)
+        if (!this.player.invulnerable) {
+            this.player.body.setVelocity(0);
+            if (this.cursors.left.isDown) this.player.body.setVelocityX(-300);
+            else if (this.cursors.right.isDown) this.player.body.setVelocityX(300);
+            if (this.cursors.up.isDown) this.player.body.setVelocityY(-300);
+            else if (this.cursors.down.isDown) this.player.body.setVelocityY(300);
+        }
+
+        // 2. Renderiza Próprio HP
+        this.drawHpBar(this.playerHpGraphics, this.player.x, this.player.y - 30, this.playerStats.hp_atual, this.playerStats.hp_max, 40);
+
+        // 3. Interpola Inimigos e Renderiza HP
+        this.enemyData.forEach(e => {
+            e.sprite.x = Phaser.Math.Linear(e.sprite.x, e.targetX, 0.15);
+            e.sprite.y = Phaser.Math.Linear(e.sprite.y, e.targetY, 0.15);
+            
+            // Sincroniza o corpo físico interno com a nova posição visual para acerto perfeito
+            if (e.sprite.body) {
+                e.sprite.body.position.x = e.sprite.x - e.sprite.body.width / 2;
+                e.sprite.body.position.y = e.sprite.y - e.sprite.body.height / 2;
+            }
+            
+            this.drawHpBar(e.hpGraphics, e.sprite.x, e.sprite.y - 25, e.hp_atual, e.hp_max, 30);
+        });
+
+        // 4. Interpola Jogadores Remotos e Renderiza HP
+        this.otherPlayers.forEach(rp => {
+            rp.sprite.x = Phaser.Math.Linear(rp.sprite.x, rp.targetX, 0.15);
+            rp.sprite.y = Phaser.Math.Linear(rp.sprite.y, rp.targetY, 0.15);
+            this.drawHpBar(rp.hpGraphics, rp.sprite.x, rp.sprite.y - 30, rp.hp_atual, rp.hp_max, 40);
+        });
+
+        // 5. Envia Atualização
+        if (this.socket && this.socket.readyState === WebSocket.OPEN) {
+            this.socket.send(JSON.stringify({
+                type: 'player_move',
+                x: this.player.x, y: this.player.y,
+                vx: this.player.body.velocity.x, vy: this.player.body.velocity.y
+            }));
         }
     }
 
-    /**
-     * Callback de overlap: chamado quando o jogador encosta em uma moeda.
-     *
-     * @param {Phaser.GameObjects.Rectangle} player - O jogador.
-     * @param {Phaser.GameObjects.Rectangle} item   - A moeda coletada.
-     */
-    collectItem(player, item) {
-        item.destroy();             // Remove a moeda do mundo
-        this.score += 10;
-        this.scoreText.setText('DADOS COLETADOS: ' + this.score);
-
-        // Se não restar nenhuma moeda, respawna um novo conjunto
-        if (this.items.getChildren().length === 0) {
-            this.spawnItems();
-        }
-    }
-
-    /**
-     * Callback de colisão letal: chamado quando o jogador encosta em um inimigo.
-     * Reinicia a cena do zero (pontuação e posições são resetadas).
-     *
-     * @param {Phaser.GameObjects.Rectangle} player - O jogador.
-     * @param {Phaser.GameObjects.Rectangle} enemy  - O inimigo que causou a morte.
-     */
-    hitEnemy(player, enemy) {
-        this.scene.restart();
+    drawHpBar(graphics, x, y, hp, maxHp, width) {
+        graphics.clear();
+        if (hp <= 0) return;
+        const percent = Math.max(0, hp / maxHp);
+        const bgX = x - width / 2;
+        graphics.fillStyle(0x000000, 0.8);
+        graphics.fillRect(bgX, y, width, 6);
+        const color = percent > 0.5 ? 0x00ff00 : (percent > 0.25 ? 0xffff00 : 0xff0000);
+        graphics.fillStyle(color, 1);
+        graphics.fillRect(bgX, y, width * percent, 6);
     }
 }

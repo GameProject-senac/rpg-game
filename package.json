@@ -3,14 +3,19 @@
   "version": "1.0.0",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "server": "node server/server.js"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "description": "",
   "dependencies": {
-    "phaser": "^4.1.0"
+    "cors": "^2.8.6",
+    "dotenv": "^17.4.2",
+    "mysql2": "^3.23.1",
+    "phaser": "^4.1.0",
+    "ws": "^8.21.1"
   },
   "repository": {
     "type": "git",

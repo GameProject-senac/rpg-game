@@ -5,7 +5,7 @@ export class Preload extends Phaser.Scene {
 
     preload() {
         // Aqui iriam os this.load.image()...
-        this.add.text(400, 300, 'Carregando Sistema...', { 
+        this.add.text(960, 300, 'Carregando Sistema...', { 
             fontFamily: 'Courier', fontSize: '24px', color: '#00ffff' 
         }).setOrigin(0.5);
     }
