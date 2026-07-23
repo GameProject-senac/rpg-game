@@ -2,7 +2,8 @@
 
 **Status Atualizado:** 
 A **Fase 1 (Multiplayer LAN & WebSockets)** foi formalmente concluída! O projeto possui agora um Servidor Node.js Autoritatório rodando a 20Hz, gerenciando estado de inimigos, loot e mitigação de dano determinística, perfeitamente sincronizado com clientes Phaser 4 que realizam interpolação suave de movimento. 
-**Foco Atual (Estado de parada):** Início da **Fase 2 (Banco de Dados MySQL e Sistema de Inventário)**. O próximo passo prático é subir a estrutura do banco relacional, plugar o pool `mysql2` no servidor Node.js e implementar a persistência de HP, posições e itens.
+Dentro da **Fase 2 (Persistência MySQL, Identidade de Personagem e Progressão)**, o **Pacote 1 — Identidade de Personagem e Trilho de Leitura do Banco** foi implementado, testado e validado (ver `fase2_spec.md` e §3 "PACOTE 1" abaixo para o registro completo). O servidor MySQL local (`rpg_game`) já está de pé, com schema mínimo e personagens de teste populados.
+**Foco Atual (Estado de parada):** Pacote 1 concluído e aguardando autorização explícita para iniciar o **Pacote 2 (Persistência de Volta e Sistema de Progressão XP/Nível)**, definido em `fase2_spec.md`. Nenhuma linha do Pacote 2 foi escrita ainda — execução é sequencial e gated por autorização, conforme regra de avanço da spec.
 
 **Origem:** Documento mestre de especificação técnica e roadmap operacional para desenvolvimento solo do *Project Post-Apoc RPG / Horizon Co-op*. Este arquivo serve como contexto técnico e guia de execução contínua para qualquer agente de IA ou sessão de desenvolvimento.
 
@@ -152,7 +153,9 @@ CREATE TABLE IF NOT EXISTS itens_instanciados_mapa (
 
 ---
 
-### FASE 2: Sistema de Inventário, Equipamentos & Persistência Relacional (Status: 🔄 Em Andamento — FOCO ATUAL)
+### FASE 2: Sistema de Inventário, Equipamentos & Persistência Relacional (Status: 🔄 Em Andamento — Pacote 1/5 concluído)
+
+> Esta fase é executada em 5 pacotes sequenciais, especificados em detalhe em `fase2_spec.md`. O registro de execução de cada pacote concluído é mantido na seção 2.3 abaixo.
 
 #### 2.1 Objetivos Técnicos
 
@@ -180,6 +183,41 @@ CREATE TABLE IF NOT EXISTS itens_instanciados_mapa (
          └─► Dispara EventBus: 'stats_updated' ──> [UIScene redesenha os atributos]
 
 ```
+
+#### 2.3 Registro de Execução — Pacote 1: Identidade de Personagem e Trilho de Leitura do Banco (Status: ✅ Concluído)
+
+**O que foi feito:**
+
+* Schema mínimo (`jogadores`, `personagens`) aplicado no MySQL 8.0 local, no schema dedicado `rpg_game` — arquivo `server/schema.sql`.
+* 5 personagens de teste populados (um por classe), com os valores arbitrários exatos definidos em `fase2_spec.md` §1.5 — arquivo `server/seed_teste.sql`.
+* Usuário de banco dedicado (`rpg_app`) criado com privilégios mínimos (`SELECT/INSERT/UPDATE/DELETE` apenas em `rpg_game`) — nenhuma credencial de root usada em runtime.
+* Credenciais de conexão isoladas em `server/.env` (git-ignorado), com `server/.env.example` versionado como referência, usando `dotenv` (dependência já existente, antes não utilizada).
+* Pool `mysql2/promise` plugado em `server/server.js`.
+* Objeto `CLASSES` (molde hardcoded de nascimento por classe) e constantes `BUFF_HP`/`BUFF_DANO`/`BUFF_DEFESA` implementados exatamente conforme `fase2_spec.md` §1.6/1.7.
+* Handshake `join` (`{ type: 'join', personagem_id }`) substituindo a criação automática de jogador por conexão (`player_N`, posição `1000,1000`, HP fixo). O servidor agora só materializa um jogador em `gameState.players` após validar o `personagem_id` contra o MySQL.
+* `gameState.players` re-chaveado por `personagem_id` (antes era chaveado pelo id efêmero da conexão).
+* Trava de sessão em memória (`Set` de `personagem_id`s ativos), populada no `join` e liberada no `close`. Duplicata é recusada com fechamento controlado do socket (`ws.close(4000, motivo)`).
+* Personagem inexistente no banco também é recusado da mesma forma, sem criar nenhuma linha nova.
+* Ações de jogo (`player_move`, `pickup_item`, `attack_enemy`) chegando antes de um `join` bem-sucedido são ignoradas silenciosamente (comportamento conservador para caso não especificado na spec).
+* Script de teste dedicado `server/test_join.js` (cliente WebSocket cru, **não faz parte do jogo**) para validar o handshake sem depender do client Phaser.
+
+**Resultado dos testes (critério obrigatório de `fase2_spec.md` §1.11 — todos os 6 itens passaram):**
+
+| # | Critério | Resultado |
+|---|---|---|
+| 1 | Carregamento real (mago id=2) | ✅ Entrou com `x=100,y=100`, `hp=60/60` do banco — não mais `1000,1000`/HP 100 hardcoded |
+| 2 | Nível 1 = semente pura | ✅ `hp_max=60, dano_base=40, defesa_base=3` — idêntico ao molde da classe (buff zero) |
+| 3 | Buff aplicado (nível 3, testado manualmente) | ✅ `hp_max=80 (60+2×10), dano_base=50 (40+2×5), defesa_base=7 (3+2×2)` |
+| 4 | Trava de sessão | ✅ Segunda conexão com o mesmo `personagem_id` é recusada (`code 4000`) |
+| 5 | Personagem inexistente (id=999) | ✅ Recusado (`code 4000`), nenhuma linha criada no banco |
+| 6 | Sem escrita | ✅ Confirmado via `SELECT` — as 5 linhas de teste permanecem exatamente como inseridas |
+
+**Observações registradas (não implementadas — fora do escopo do Pacote 1):**
+
+* O client Phaser (`ExploracaoCombate.js`) ainda **não envia** `join` — decisão do responsável pelo projeto foi manter a validação restrita a um cliente de teste dedicado neste pacote, deixando o jogo real inoperante até a fase de seleção de personagem existir. Nenhuma alteração foi feita no client.
+* Divergências de nomenclatura de protocolo entre este roadmap e o código (`player_join`/`join`, `pickup_item_request`/`pickup_item`, `player_attack`/`attack_enemy`) permanecem registradas e sem ação — reconciliação é escopo do **Pacote 5**.
+
+**Próximo passo:** Pacote 2 (Persistência de Volta e Sistema de Progressão XP/Nível), aguardando autorização explícita para início.
 
 ---
 
@@ -292,11 +330,11 @@ findSafeDropPosition(originX, originY, tilemapLayer) {
 
 ## 6. Estado Exato para Retomada (Próxima Sessão de Código)
 
-**Ponto de Parada Atual:** O servidor WebSocket (Fase 1) funciona maravilhosamente e com total autoridade sobre física básica e estado de vida. O próximo passo é integrar Persistência de Dados (Fase 2).
+**Ponto de Parada Atual:** Fase 2 / **Pacote 1 concluído e validado** (ver §2.3 acima e `fase2_spec.md`). O servidor já lê identidade real de personagem do MySQL (`rpg_game`), aplica molde de classe + buff de nível, e mantém trava de sessão em memória. **O servidor ainda não grava nada no banco** — isso é o Pacote 2.
 
-1. **Ação Imediata:** Rodar o script SQL (`CREATE TABLE...`) definido neste documento num banco MySQL local.
-2. **Integração no Backend:** Importar o `mysql2` no `server/server.js`, criar o pool de conexão, e alterar a entrada do jogador (`player_join`) para buscar as posições reais (X, Y) e HP do banco em vez de usar `1000, 1000` hardcoded.
-3. **Frontend UI:** Preparar a infraestrutura visual (Scene paralela `UIScene`) no Phaser para mostrar o Inventário.
+1. **Banco já de pé:** schema aplicado e 5 personagens de teste populados (`server/schema.sql`, `server/seed_teste.sql`). Usuário dedicado `rpg_app` configurado; credenciais em `server/.env` (git-ignorado, não commitar).
+2. **Próxima ação:** iniciar o **Pacote 2 — Persistência de Volta e Sistema de Progressão (XP/Nível)** de `fase2_spec.md`, mediante autorização explícita: snapshot periódico (~10s) de posição/HP, save no `disconnect`, ganho de XP ao matar inimigo, subida de nível com recálculo em memória e broadcast `level_up`.
+3. **Ainda pendente (fora dos pacotes já feitos):** client Phaser (`ExploracaoCombate.js`) não envia `join` — jogo real via browser não entra em campo até isso ser endereçado numa fase futura (seleção de personagem). Tabela `inventario` e `UIScene` seguem para o Pacote 4.
 
 ---
 

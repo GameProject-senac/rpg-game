@@ -1,4 +1,31 @@
+const path = require('path');
+require('dotenv').config({ path: path.join(__dirname, '.env') });
 const WebSocket = require('ws');
+const mysql = require('mysql2/promise');
+
+const pool = mysql.createPool({
+    host: process.env.DB_HOST,
+    port: process.env.DB_PORT,
+    user: process.env.DB_USER,
+    password: process.env.DB_PASSWORD,
+    database: process.env.DB_NAME,
+    waitForConnections: true,
+    connectionLimit: 10
+});
+
+// Semente de nascimento por classe. Valores arbitrários de teste (não finais).
+// Representa o estado base no nível 1, antes de qualquer buff de nível.
+const CLASSES = {
+    guerreiro: { hp_max: 100, dano_base: 25, defesa_base: 5 },
+    mago:      { hp_max: 60,  dano_base: 40, defesa_base: 3 },
+    arqueiro:  { hp_max: 70,  dano_base: 35, defesa_base: 3 },
+    suporte:   { hp_max: 80,  dano_base: 20, defesa_base: 4 },
+    tanque:    { hp_max: 150, dano_base: 15, defesa_base: 8 }
+};
+
+const BUFF_HP = 10;
+const BUFF_DANO = 5;
+const BUFF_DEFESA = 2;
 
 const wss = new WebSocket.Server({ port: 8080 });
 console.log('🚀 Servidor WebSocket AUTORITÁRIO iniciado (Tick Rate: 20Hz)');
@@ -10,7 +37,9 @@ const gameState = {
     items: {}
 };
 
-let nextPlayerId = 1;
+// Trava de sessão em memória: personagem_id ativos no momento (efêmera, não persiste).
+const activeSessions = new Set();
+
 let nextEnemyId = 1;
 let nextItemId = 1;
 
@@ -38,28 +67,84 @@ function spawnMoedas() {
 spawnMoedas();
 
 wss.on('connection', (ws) => {
-    const playerId = `player_${nextPlayerId++}`;
-    console.log(`[+] Conexão Estabelecida: ${playerId}`);
+    console.log('[+] Conexão WebSocket estabelecida (aguardando join)');
 
-    // Cria jogador com score zerado
-    gameState.players[playerId] = {
-        id: playerId, x: 1000, y: 1000, vx: 0, vy: 0,
-        hp_atual: 100, hp_max: 100, defesa_base: 5, dano_base: 25, score: 0
-    };
+    // Identidade da conexão: só existe após um 'join' bem-sucedido.
+    let personagemId = null;
 
-    // Manda TODO o estado atual para o novo jogador (Players, Inimigos e Itens)
-    ws.send(JSON.stringify({ 
-        type: 'welcome', 
-        id: playerId, 
-        state: gameState 
-    }));
-
-    broadcast({ type: 'player_joined', player: gameState.players[playerId] }, ws);
-
-    ws.on('message', (message) => {
+    ws.on('message', async (message) => {
         try {
             const data = JSON.parse(message);
-            const player = gameState.players[playerId];
+
+            if (data.type === 'join') {
+                const requestedId = data.personagem_id;
+
+                if (activeSessions.has(requestedId)) {
+                    console.log(`[join] Recusado — personagem_id ${requestedId} já está em sessão ativa.`);
+                    ws.close(4000, 'Personagem já está em uma sessão ativa');
+                    return;
+                }
+
+                let rows;
+                try {
+                    [rows] = await pool.query('SELECT * FROM personagens WHERE id = ?', [requestedId]);
+                } catch (dbErr) {
+                    console.error('[join] Erro ao consultar personagem:', dbErr);
+                    ws.close(4000, 'Erro ao carregar personagem');
+                    return;
+                }
+
+                if (rows.length === 0) {
+                    console.log(`[join] Recusado — personagem_id ${requestedId} não encontrado.`);
+                    ws.close(4000, 'Personagem não encontrado');
+                    return;
+                }
+
+                const row = rows[0];
+                const molde = CLASSES[row.classe];
+                if (!molde) {
+                    console.error(`[join] Classe desconhecida para personagem ${requestedId}: ${row.classe}`);
+                    ws.close(4000, 'Classe de personagem inválida');
+                    return;
+                }
+
+                const niveisAcima = row.nivel - 1;
+                const hp_max = molde.hp_max + niveisAcima * BUFF_HP;
+                const dano_base = molde.dano_base + niveisAcima * BUFF_DANO;
+                const defesa_base = molde.defesa_base + niveisAcima * BUFF_DEFESA;
+
+                personagemId = requestedId;
+                activeSessions.add(personagemId);
+
+                gameState.players[personagemId] = {
+                    id: personagemId,
+                    nome: row.nome,
+                    classe: row.classe,
+                    nivel: row.nivel,
+                    experiencia: row.experiencia,
+                    x: row.posicao_x,
+                    y: row.posicao_y,
+                    vx: 0, vy: 0,
+                    hp_atual: row.hp_atual,
+                    hp_max, dano_base, defesa_base,
+                    score: 0
+                };
+
+                console.log(`[+] Personagem ${personagemId} (${row.nome}, ${row.classe}, nível ${row.nivel}) entrou.`);
+
+                ws.send(JSON.stringify({
+                    type: 'welcome',
+                    id: personagemId,
+                    state: gameState
+                }));
+
+                broadcast({ type: 'player_joined', player: gameState.players[personagemId] }, ws);
+                return;
+            }
+
+            if (personagemId === null) return; // Sem identidade estabelecida, ignora ação
+
+            const player = gameState.players[personagemId];
 
             if (!player || player.hp_atual <= 0) return; // Mortos não agem
 
@@ -74,7 +159,7 @@ wss.on('connection', (ws) => {
                     player.score += 10;
                     
                     // Avisa todo mundo que sumiu e quem pegou
-                    broadcast({ type: 'item_despawned', itemId: data.itemId, playerId: playerId });
+                    broadcast({ type: 'item_despawned', itemId: data.itemId, playerId: personagemId });
                     
                     // Se as moedas acabaram, invoca mais!
                     if (Object.keys(gameState.items).length === 0) {
@@ -121,9 +206,14 @@ wss.on('connection', (ws) => {
     });
 
     ws.on('close', () => {
-        console.log(`[-] Conexão Encerrada: ${playerId}`);
-        delete gameState.players[playerId];
-        broadcast({ type: 'player_left', id: playerId });
+        if (personagemId !== null) {
+            console.log(`[-] Personagem Desconectado: ${personagemId}`);
+            delete gameState.players[personagemId];
+            activeSessions.delete(personagemId);
+            broadcast({ type: 'player_left', id: personagemId });
+        } else {
+            console.log('[-] Conexão encerrada antes de qualquer join.');
+        }
     });
 });
 
