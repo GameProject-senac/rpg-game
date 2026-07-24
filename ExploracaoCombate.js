@@ -25,6 +25,11 @@ export class ExploracaoCombate extends Phaser.Scene {
         this.playerHpGraphics = this.add.graphics();
         this.cameras.main.startFollow(this.player, true, 0.08, 0.08);
 
+        // Throttle de envio de player_move: 60Hz de update() -> no máximo 20Hz de rede (fase2_spec.md Pacote 3).
+        this.moveSendAccumulator = 0;
+        this.MOVE_SEND_INTERVAL_MS = 50;
+        this.movePayload = { type: 'player_move', x: 0, y: 0, vx: 0, vy: 0 };
+
         // ─────────────────────────────────────────────────────────────────
         // SETUP MULTIPLAYER (DADOS LOCAIS ESPELHANDO O SERVIDOR)
         // ─────────────────────────────────────────────────────────────────
@@ -63,9 +68,18 @@ export class ExploracaoCombate extends Phaser.Scene {
         this.input.keyboard.once('keydown-ESC', () => this.scene.start('Loading', { destino: 'HubCentral' }));
 
         this.initMultiplayer();
-        
+
+        // UIScene (inventário) roda em paralelo — só desenha o que o servidor manda via EventBus.
+        this.scene.launch('UIScene');
+        this.onInventoryAction = (msg) => {
+            if (this.socket && this.socket.readyState === WebSocket.OPEN) this.socket.send(JSON.stringify(msg));
+        };
+        this.game.events.on('inventory_action', this.onInventoryAction);
+
         this.events.once('shutdown', () => {
             this.input.keyboard.removeAllListeners('keydown-ESC');
+            this.game.events.off('inventory_action', this.onInventoryAction);
+            this.scene.stop('UIScene');
             this.playerHpGraphics.destroy();
             this.enemyData.forEach(data => data.hpGraphics.destroy());
             this.otherPlayers.forEach(rp => rp.hpGraphics.destroy());
@@ -77,103 +91,169 @@ export class ExploracaoCombate extends Phaser.Scene {
         this.socket = new WebSocket('ws://localhost:8080');
         this.socket.onopen = () => console.log('Conectado ao servidor autoritário!');
 
+        // Despacho por mapa de handlers em vez de cadeia if/else (fase2_spec.md Pacote 5, §5.1.1).
+        this.messageHandlers = {
+            welcome: this.handleWelcome.bind(this),
+            player_joined: this.handlePlayerJoined.bind(this),
+            player_left: this.handlePlayerLeft.bind(this),
+            item_despawned: this.handleItemDespawned.bind(this),
+            items_respawned: this.handleItemsRespawned.bind(this),
+            combat_event: this.handleCombatEvent.bind(this),
+            enemy_died: this.handleEnemyDied.bind(this),
+            player_died: this.handlePlayerDied.bind(this),
+            level_up: this.handleLevelUp.bind(this),
+            inventory_update: this.handleInventoryUpdate.bind(this),
+            stats_updated: this.handleStatsUpdated.bind(this),
+            state_update: this.handleStateUpdate.bind(this)
+        };
+
         this.socket.onmessage = (event) => {
             const data = JSON.parse(event.data);
-
-            // 1. CARREGAMENTO INICIAL DO MUNDO
-            if (data.type === 'welcome') {
-                this.myId = data.id;
-                this.playerStats = data.state.players[this.myId];
-                
-                for (const pid in data.state.players) {
-                    if (pid !== this.myId) this.spawnRemotePlayer(data.state.players[pid]);
-                }
-                for (const eid in data.state.enemies) this.spawnEnemy(data.state.enemies[eid]);
-                for (const iid in data.state.items) this.spawnItem(data.state.items[iid]);
-            }
-            // 2. OUTROS JOGADORES ENTRANDO/SAINDO
-            else if (data.type === 'player_joined') {
-                if (data.player.id !== this.myId) this.spawnRemotePlayer(data.player);
-            }
-            else if (data.type === 'player_left') {
-                if (this.otherPlayers.has(data.id)) {
-                    const rp = this.otherPlayers.get(data.id);
-                    rp.hpGraphics.destroy();
-                    rp.sprite.destroy();
-                    this.otherPlayers.delete(data.id);
-                }
-            }
-            // 3. COLETA DE ITENS
-            else if (data.type === 'item_despawned') {
-                if (data.playerId === this.myId) {
-                    this.score += 10;
-                    this.scoreText.setText('DADOS COLETADOS: ' + this.score);
-                }
-                if (this.itemData.has(data.itemId)) {
-                    this.itemData.get(data.itemId).destroy();
-                    this.itemData.delete(data.itemId);
-                }
-            }
-            // 3.5. RESPAWN DE ITENS
-            else if (data.type === 'items_respawned') {
-                for (const iid in data.items) {
-                    this.spawnItem(data.items[iid]);
-                }
-            }
-            // 4. RESULTADO DE COMBATE (HP UPDATE)
-            else if (data.type === 'combat_event') {
-                if (data.playerId === this.myId) {
-                    this.playerStats.hp_atual = data.player_hp;
-                } else if (this.otherPlayers.has(data.playerId)) {
-                    this.otherPlayers.get(data.playerId).hp_atual = data.player_hp;
-                }
-                if (this.enemyData.has(data.enemyId)) {
-                    this.enemyData.get(data.enemyId).hp_atual = data.enemy_hp;
-                }
-            }
-            // 5. EVENTOS DE MORTE
-            else if (data.type === 'enemy_died') {
-                if (data.killerId === this.myId) {
-                    this.score += 50;
-                    this.scoreText.setText('DADOS COLETADOS: ' + this.score);
-                }
-                if (this.enemyData.has(data.enemyId)) {
-                    const e = this.enemyData.get(data.enemyId);
-                    e.hpGraphics.destroy();
-                    e.sprite.destroy();
-                    this.enemyData.delete(data.enemyId);
-                }
-            }
-            else if (data.type === 'player_died') {
-                if (data.playerId === this.myId) {
-                    this.scene.restart(); // Renasce (FSM trata o shutdown)
-                } else if (this.otherPlayers.has(data.playerId)) {
-                    const rp = this.otherPlayers.get(data.playerId);
-                    rp.hpGraphics.destroy();
-                    rp.sprite.destroy();
-                    this.otherPlayers.delete(data.playerId);
-                }
-            }
-            // 6. SYNC DE POSIÇÕES (20Hz)
-            else if (data.type === 'state_update') {
-                // Players Remotos
-                for (const pid in data.players) {
-                    if (pid !== this.myId && this.otherPlayers.has(pid)) {
-                        const rp = this.otherPlayers.get(pid);
-                        rp.targetX = data.players[pid].x;
-                        rp.targetY = data.players[pid].y;
-                    }
-                }
-                // Inimigos Controlados pelo Servidor
-                for (const eid in data.enemies) {
-                    if (this.enemyData.has(eid)) {
-                        const e = this.enemyData.get(eid);
-                        e.targetX = data.enemies[eid].x;
-                        e.targetY = data.enemies[eid].y;
-                    }
-                }
-            }
+            const handler = this.messageHandlers[data.type];
+            if (handler) handler(data);
         };
+    }
+
+    // ─────────────────────────────────────────────────────────────────
+    // HANDLERS DE MENSAGENS DO SERVIDOR
+    // ─────────────────────────────────────────────────────────────────
+
+    // CARREGAMENTO INICIAL DO MUNDO
+    handleWelcome(data) {
+        this.myId = data.id;
+        this.playerStats = data.state.players[this.myId];
+
+        for (const pid in data.state.players) {
+            if (pid !== this.myId) this.spawnRemotePlayer(data.state.players[pid]);
+        }
+        for (const eid in data.state.enemies) this.spawnEnemy(data.state.enemies[eid]);
+        for (const iid in data.state.items) this.spawnItem(data.state.items[iid]);
+
+        // Estado inicial de inventário/atributos pra UIScene (já veio dentro do welcome)
+        this.game.events.emit('inventory_update', { personagem_id: this.myId, itens: this.playerStats.inventario });
+        this.game.events.emit('stats_updated', {
+            personagem_id: this.myId,
+            hp_max: this.playerStats.hp_max,
+            dano_base: this.playerStats.dano_base,
+            defesa_base: this.playerStats.defesa_base,
+            hp_atual: this.playerStats.hp_atual
+        });
+    }
+
+    // OUTROS JOGADORES ENTRANDO/SAINDO
+    handlePlayerJoined(data) {
+        if (data.player.id !== this.myId) this.spawnRemotePlayer(data.player);
+    }
+
+    handlePlayerLeft(data) {
+        if (this.otherPlayers.has(data.id)) {
+            const rp = this.otherPlayers.get(data.id);
+            rp.hpGraphics.destroy();
+            rp.sprite.destroy();
+            this.otherPlayers.delete(data.id);
+        }
+    }
+
+    // COLETA DE ITENS
+    handleItemDespawned(data) {
+        if (data.playerId === this.myId) {
+            this.score += 10;
+            this.scoreText.setText('DADOS COLETADOS: ' + this.score);
+        }
+        if (this.itemData.has(data.itemId)) {
+            this.itemData.get(data.itemId).destroy();
+            this.itemData.delete(data.itemId);
+        }
+    }
+
+    handleItemsRespawned(data) {
+        for (const iid in data.items) {
+            this.spawnItem(data.items[iid]);
+        }
+    }
+
+    // RESULTADO DE COMBATE (HP UPDATE)
+    handleCombatEvent(data) {
+        if (data.playerId === this.myId) {
+            this.playerStats.hp_atual = data.player_hp;
+        } else if (this.otherPlayers.has(data.playerId)) {
+            this.otherPlayers.get(data.playerId).hp_atual = data.player_hp;
+        }
+        if (this.enemyData.has(data.enemyId)) {
+            this.enemyData.get(data.enemyId).hp_atual = data.enemy_hp;
+        }
+    }
+
+    // EVENTOS DE MORTE
+    handleEnemyDied(data) {
+        if (data.killerId === this.myId) {
+            this.score += 50;
+            this.scoreText.setText('DADOS COLETADOS: ' + this.score);
+        }
+        if (this.enemyData.has(data.enemyId)) {
+            const e = this.enemyData.get(data.enemyId);
+            e.hpGraphics.destroy();
+            e.sprite.destroy();
+            this.enemyData.delete(data.enemyId);
+        }
+    }
+
+    handlePlayerDied(data) {
+        if (data.playerId === this.myId) {
+            this.scene.restart(); // Renasce (FSM trata o shutdown)
+        } else if (this.otherPlayers.has(data.playerId)) {
+            const rp = this.otherPlayers.get(data.playerId);
+            rp.hpGraphics.destroy();
+            rp.sprite.destroy();
+            this.otherPlayers.delete(data.playerId);
+        }
+    }
+
+    // SUBIDA DE NÍVEL (reusa o mesmo canal 'stats_updated' que a UIScene já ouve)
+    handleLevelUp(data) {
+        if (data.personagem_id !== this.myId) return;
+        this.playerStats.nivel = data.nivel;
+        this.playerStats.hp_max = data.hp_max;
+        this.playerStats.dano_base = data.dano_base;
+        this.playerStats.defesa_base = data.defesa_base;
+        this.playerStats.hp_atual = data.hp_atual;
+        this.game.events.emit('stats_updated', data);
+    }
+
+    // INVENTÁRIO / ATRIBUTOS (autoridade 100% do servidor — client só espelha e repassa pro EventBus)
+    handleInventoryUpdate(data) {
+        if (data.personagem_id !== this.myId) return;
+        this.playerStats.inventario = data.itens;
+        this.game.events.emit('inventory_update', data);
+    }
+
+    handleStatsUpdated(data) {
+        if (data.personagem_id !== this.myId) return;
+        this.playerStats.hp_max = data.hp_max;
+        this.playerStats.dano_base = data.dano_base;
+        this.playerStats.defesa_base = data.defesa_base;
+        this.playerStats.hp_atual = data.hp_atual;
+        this.game.events.emit('stats_updated', data);
+    }
+
+    // SYNC DE POSIÇÕES (20Hz)
+    handleStateUpdate(data) {
+        // Players Remotos
+        for (const pid in data.players) {
+            if (pid !== this.myId && this.otherPlayers.has(pid)) {
+                const rp = this.otherPlayers.get(pid);
+                rp.targetX = data.players[pid].x;
+                rp.targetY = data.players[pid].y;
+            }
+        }
+        // Inimigos Controlados pelo Servidor
+        for (const eid in data.enemies) {
+            if (this.enemyData.has(eid)) {
+                const e = this.enemyData.get(eid);
+                e.targetX = data.enemies[eid].x;
+                e.targetY = data.enemies[eid].y;
+            }
+        }
     }
 
     // ─────────────────────────────────────────────────────────────────
@@ -208,9 +288,9 @@ export class ExploracaoCombate extends Phaser.Scene {
     }
 
     // ─────────────────────────────────────────────────────────────────
-    // LOOP PRINCIPAL (60Hz)
+    // LOOP PRINCIPAL (60Hz de render; envio de rede throttled a 20Hz)
     // ─────────────────────────────────────────────────────────────────
-    update() {
+    update(time, delta) {
         if (!this.playerStats) return; // Espera o handshake do server
 
         // 1. Movimentação Local Predita (SÓ PERMITE SE NÃO ESTIVER EM KNOCKBACK)
@@ -246,13 +326,17 @@ export class ExploracaoCombate extends Phaser.Scene {
             this.drawHpBar(rp.hpGraphics, rp.sprite.x, rp.sprite.y - 30, rp.hp_atual, rp.hp_max, 40);
         });
 
-        // 5. Envia Atualização
-        if (this.socket && this.socket.readyState === WebSocket.OPEN) {
-            this.socket.send(JSON.stringify({
-                type: 'player_move',
-                x: this.player.x, y: this.player.y,
-                vx: this.player.body.velocity.x, vy: this.player.body.velocity.y
-            }));
+        // 5. Envia Atualização (throttled a ~20Hz, payload reutilizado — zero alocação por frame)
+        this.moveSendAccumulator += delta;
+        if (this.moveSendAccumulator >= this.MOVE_SEND_INTERVAL_MS) {
+            this.moveSendAccumulator -= this.MOVE_SEND_INTERVAL_MS;
+            if (this.socket && this.socket.readyState === WebSocket.OPEN) {
+                this.movePayload.x = this.player.x;
+                this.movePayload.y = this.player.y;
+                this.movePayload.vx = this.player.body.velocity.x;
+                this.movePayload.vy = this.player.body.velocity.y;
+                this.socket.send(JSON.stringify(this.movePayload));
+            }
         }
     }
 

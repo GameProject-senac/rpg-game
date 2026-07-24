@@ -25,3 +25,14 @@ CREATE TABLE IF NOT EXISTS personagens (
     atualizado_em TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     CONSTRAINT fk_personagem_jogador FOREIGN KEY (jogadores_id) REFERENCES jogadores(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- Schema adicional do Pacote 4 da Fase 2 (fase2_spec.md §4.3).
+CREATE TABLE IF NOT EXISTS inventario (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    personagem_id INT NOT NULL,
+    item_id VARCHAR(50) NOT NULL,
+    quantidade INT DEFAULT 1,
+    tipo VARCHAR(30) NOT NULL,
+    equipado BOOLEAN DEFAULT FALSE,
+    CONSTRAINT fk_inventario_personagem FOREIGN KEY (personagem_id) REFERENCES personagens(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

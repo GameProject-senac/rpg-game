@@ -354,7 +354,7 @@ Todos os valores abaixo foram definidos por decisão do projeto **apenas para de
 | Buff dano por nível | +5 | `BUFF_DANO` |
 | Buff defesa por nível | +2 | `BUFF_DEFESA` |
 | XP para próximo nível | `nivel * 100` | Fórmula de progressão |
-| XP por inimigo morto | 50 (a confirmar no Pacote 2) | Ganho de XP |
+| XP por inimigo morto | 50 (confirmado no Pacote 2) | Ganho de XP |
 | Intervalo de snapshot | ~10 segundos | Persistência periódica |
 
 ## APÊNDICE B — Ordem de Execução e Regra de Avanço

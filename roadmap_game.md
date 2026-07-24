@@ -1,9 +1,8 @@
 # roadmap_game.md — Roadmap Técnico e Próximos Passos de Desenvolvimento
 
-**Status Atualizado:** 
-A **Fase 1 (Multiplayer LAN & WebSockets)** foi formalmente concluída! O projeto possui agora um Servidor Node.js Autoritatório rodando a 20Hz, gerenciando estado de inimigos, loot e mitigação de dano determinística, perfeitamente sincronizado com clientes Phaser 4 que realizam interpolação suave de movimento. 
-Dentro da **Fase 2 (Persistência MySQL, Identidade de Personagem e Progressão)**, o **Pacote 1 — Identidade de Personagem e Trilho de Leitura do Banco** foi implementado, testado e validado (ver `fase2_spec.md` e §3 "PACOTE 1" abaixo para o registro completo). O servidor MySQL local (`rpg_game`) já está de pé, com schema mínimo e personagens de teste populados.
-**Foco Atual (Estado de parada):** Pacote 1 concluído e aguardando autorização explícita para iniciar o **Pacote 2 (Persistência de Volta e Sistema de Progressão XP/Nível)**, definido em `fase2_spec.md`. Nenhuma linha do Pacote 2 foi escrita ainda — execução é sequencial e gated por autorização, conforme regra de avanço da spec.
+**Status Atualizado:**
+A **Fase 1 (Multiplayer LAN & WebSockets)** e a **Fase 2 (Persistência MySQL, Identidade de Personagem e Progressão)** estão formalmente concluídas. A Fase 2 foi executada em 5 pacotes sequenciais (`fase2_spec.md`), todos implementados, testados e documentados (ver §2.3-§2.7 abaixo): identidade de personagem lida do MySQL (Pacote 1), persistência de volta + XP/nível (Pacote 2), throttle de rede do client (Pacote 3), sistema de inventário/equipamento (Pacote 4), e higiene de código + reconciliação de documentação (Pacote 5). O servidor MySQL local (`rpg_game`) está de pé, com schema completo (`jogadores`, `personagens`, `inventario`), personagens de teste populados e usuário dedicado `rpg_app` operante. O servidor grava no banco em tempo real: snapshot periódico (~10s), save no disconnect, XP/nível e inventário/equipamento (eventos críticos, gravação imediata).
+**Foco Atual (Estado de parada):** Fase 2 completa. Uma pendência conhecida ficou registrada e não resolvida (feedback de `equip_item`/`unequip_item` recusado — precisa de um contrato de rede novo, fora do escopo do Pacote 5, aguardando decisão do responsável do projeto). Próxima decisão: iniciar a Fase 3 (Level Design Avançado) ou resolver essa pendência primeiro.
 
 **Origem:** Documento mestre de especificação técnica e roadmap operacional para desenvolvimento solo do *Project Post-Apoc RPG / Horizon Co-op*. Este arquivo serve como contexto técnico e guia de execução contínua para qualquer agente de IA ou sessão de desenvolvimento.
 
@@ -14,11 +13,22 @@ Dentro da **Fase 2 (Persistência MySQL, Identidade de Personagem e Progressão)
 1. **Desacoplamento Absoluto (Phaser vs. Regra de Negócio):**
 O Phaser 4.1.0 atua puramente na camada de apresentação (Canvas/WebGL, rendering de sprites, animações, inputs e câmeras). Nenhuma regra de inventário, atributos de classe, cálculo de dano ou persistência reside dentro de Sprites ou Containers.
 2. **Autoridade do Servidor e Sincronização LAN:**
-A autoridade sobre a posição de inimigos, HP dos alvos, tabela de loot e estado da partida pertence ao servidor Node.js. O cliente envia intenções de comando (`player_move`, `use_skill`, `item_pickup`) e realiza interpolação visual (*lerp*) para suavizar a renderização dos outros jogadores.
+A autoridade sobre a posição de inimigos, HP dos alvos, tabela de loot e estado da partida pertence ao servidor Node.js. O cliente envia intenções de comando (`player_move`, `attack_enemy`, `pickup_item`) e realiza interpolação visual (*lerp*) para suavizar a renderização dos outros jogadores.
 3. **Persistência Relacional com MySQL:**
 O MySQL é a fonte da verdade para dados persistentes (contas, personagens, atributos base, inventário e histórico). Transições entre cenas persistem no `registry` em memória temporária do Phaser e salvam assincronamente no MySQL.
 4. **Arquitetura Baseada em Eventos (EventBus):**
-Comunicação interna entre a UI do jogo e os módulos de domínio ocorre via EventBus global desacoplado. Toda troca de cena exige a desmontagem explícita de *listeners*, cancelamento de *tweens* e *timers* para zerar riscos de *memory leaks*.
+Comunicação interna entre a UI do jogo e os módulos de domínio ocorre via EventBus global desacoplado (`this.game.events`, nativo do Phaser — implementado no Pacote 4 entre `ExploracaoCombate`/`UIScene`). Toda troca de cena exige a desmontagem explícita de *listeners*, cancelamento de *tweens* e *timers* para zerar riscos de *memory leaks*.
+
+### 1.1 Decisões Travadas da Fase 2 (registro formal — fase2_spec.md §5.1.2)
+
+Decisões deliberadas e fechadas durante a Fase 2 (Pacotes 1-4), registradas aqui formalmente por exigência do Pacote 5 e da Regra 6 do `AGENTS.md` (nunca alterar contrato sem atualizar a documentação):
+
+* **Canal único WebSocket.** Toda comunicação client↔servidor passa pelo WebSocket existente (`ws`, porta 8080). Sem API REST, sem Redis — ambos avaliados como evolução futura de escala, fora do escopo atual.
+* **Servidor autoritário sobre toda regra de jogo.** Atributos, dano, XP, nível, inventário e posição validada vivem e são calculados no servidor Node.js. O client envia intenções e renderiza respostas.
+* **Modelo de recálculo de atributos.** `hp_max`/`dano_base`/`defesa_base` nunca são persistidos na tabela `personagens`. São sempre derivados em memória no `join`, na subida de nível e ao equipar/desequipar item, pela fórmula `base_da_classe(nivel) + soma_dos_itens_equipados` (`calcularAtributosEfetivos` + `recalcularAtributosEfetivos` em `server/server.js`). Garante fonte única de verdade e rebalanceamento retroativo.
+* **Molde de classe hardcoded.** Atributos-base por classe (`CLASSES`) e catálogo de itens (`ITENS`) vivem como constantes no código do servidor, não em tabelas. Uma tabela `classes`/`itens` no banco é evolução futura, fora do escopo.
+* **Persistência assíncrona e escalonada.** Eventos críticos (subida de nível, coleta de item, equipar/desequipar) gravam imediatamente. Posição e HP gravam por snapshot periódico (~10s, `server/server.js`) e obrigatoriamente no `disconnect`.
+* **Itens formalmente adiados (não implementar sem nova autorização):** login/autenticação, tabela `classes`, tabela `itens_instanciados_mapa` (moedas do mapa continuam efêmeras em memória com respawn), Redis/cache, anti-cheat de validação de posição.
 
 ---
 
@@ -128,32 +138,44 @@ CREATE TABLE IF NOT EXISTS itens_instanciados_mapa (
 * ✅ **Protocolo de Rede:** Estabelecido protocolo JSON operando num *Tick Rate* de 20Hz (50ms).
 * ✅ **Servidor Autoritário:** Sincronização perfeita de posições (com *Lerp* no client), cálculo determinístico de combate e coleta/respawn de loot centralizados no servidor.
 
-#### 1.2 Protocolo de Comunicação em Rede (Payload Spec)
+#### 1.2 Protocolo de Comunicação em Rede (Payload Real — nomes canônicos, reconciliados no Pacote 5)
+
+> Esta seção foi reescrita no Pacote 5 (`fase2_spec.md` §5.1.2) pra refletir exatamente o que o código faz, não uma especificação aspiracional anterior à implementação. Os nomes/campos aqui SÃO os nomes/campos do código — não o inverso. Alguns conceitos da versão anterior desta tabela (token de autenticação, `habilidade_id`/sistema de skills, `critico`, `timestamp` por mensagem) nunca foram implementados e foram removidos da documentação por não corresponderem a nada real; login/autenticação continua formalmente adiado (`fase2_spec.md` §1).
 
 * **Conexão e Entrada na Sala:**
-* Client $\rightarrow$ Server (`player_join`): `{ token, personagem_id }`
-* Server $\rightarrow$ Clients (`player_spawned`): `{ id, nome, classe, x, y, hp_atual, hp_max }`
+* Client → Server (`join`): `{ personagem_id }`
+* Server → Client que entrou (`welcome`): `{ id, state }` — `state` é o `gameState` completo (jogadores, inimigos, itens)
+* Server → Demais Clients (`player_joined`): `{ player }` — objeto completo do jogador que entrou (inclui `inventario`)
+* Server → Clients (`player_left`): `{ id }`
 
-
-* **Transmissão de Movimento (Tick Rate: 20 Hz / 50ms):**
-* Client $\rightarrow$ Server (`player_move`): `{ x, y, vx, vy, anim, flipX }`
-* Server $\rightarrow$ Clients (`player_updated`): `{ id, x, y, vx, vy, anim, flipX, timestamp }`
-
+* **Transmissão de Movimento (Client throttled a ~20Hz desde o Pacote 3 / Tick Rate do servidor: 20Hz / 50ms):**
+* Client → Server (`player_move`): `{ x, y, vx, vy }`
+* Server → Clients, broadcast a cada tick (`state_update`): `{ players, enemies }` — não existe mensagem individual por jogador
 
 * **Sincronização de Combate:**
-* Client $\rightarrow$ Server (`player_attack`): `{ alvo_id, habilidade_id, direcao }`
-* Server $\rightarrow$ Clients (`combat_event`): `{ atacante_id, alvo_id, dano, hp_resultante, critico }`
-
+* Client → Server (`attack_enemy`): `{ enemyId }` — combate é por toque/overlap, não há sistema de habilidades/direção
+* Server → Clients (`combat_event`): `{ enemyId, playerId, enemy_hp, player_hp }`
+* Server → Clients (`enemy_died`): `{ enemyId, killerId }`
+* Server → Clients (`player_died`): `{ playerId }`
 
 * **Coleta de Loot:**
-* Client $\rightarrow$ Server (`pickup_item_request`): `{ instanciado_id }`
-* Server $\rightarrow$ Clients (`item_despawned`): `{ instanciado_id, coletado_por_id }`
+* Client → Server (`pickup_item`): `{ itemId }`
+* Server → Clients (`item_despawned`): `{ itemId, playerId }`
+* Server → Clients (`items_respawned`): `{ items }`
+
+* **Progressão (Pacote 2):**
+* Server → Client (`level_up`): `{ personagem_id, nivel, hp_max, dano_base, defesa_base, hp_atual }`
+
+* **Inventário (Pacote 4):**
+* Client → Server (`equip_item` / `unequip_item`): `{ inventario_id }`
+* Server → Client (`inventory_update`): `{ personagem_id, itens }`
+* Server → Client (`stats_updated`): `{ personagem_id, hp_max, dano_base, defesa_base, hp_atual }`
 
 
 
 ---
 
-### FASE 2: Sistema de Inventário, Equipamentos & Persistência Relacional (Status: 🔄 Em Andamento — Pacote 1/5 concluído)
+### FASE 2: Sistema de Inventário, Equipamentos & Persistência Relacional (Status: ✅ Concluída — Pacotes 1-5/5)
 
 > Esta fase é executada em 5 pacotes sequenciais, especificados em detalhe em `fase2_spec.md`. O registro de execução de cada pacote concluído é mantido na seção 2.3 abaixo.
 
@@ -165,23 +187,32 @@ CREATE TABLE IF NOT EXISTS itens_instanciados_mapa (
 
 #### 2.2 Fluxo de Atualização de Atributos ao Equipar Item
 
+> Reescrito no Pacote 5. A versão anterior deste fluxograma foi escrita antes do fechamento da Fase 2 e descrevia gravar `dano_base`/`defesa_base` direto na tabela `personagens` ao equipar — isso contradiz o modelo de recálculo travado em `fase2_spec.md` §1/§4.5 (atributos efetivos são sempre derivados em memória, nunca persistidos) e nunca foi implementado dessa forma. O fluxo abaixo é o que o Pacote 4 realmente construiu.
+
 ```
-[Jogador clica "Equipar" na UI]
+[Jogador clica no slot na UIScene]
          │
          ▼
-[InventoryManager.equiparItem(itemId)]
+[UIScene emite 'inventory_action' no EventBus — não valida nada, só decide equip_item/unequip_item pelo estado já exibido]
          │
-         ├─► Valida se atende aos requisitos da Classe/Nível
-         ├─► Atualiza estado interno: item.equipado = true
-         ├─► Recalcula: dano_total = dano_base + sum(itens.dano)
-         │               defesa_total = defesa_base + sum(itens.defesa)
+         ▼
+[ExploracaoCombate repassa a mensagem pro socket]
          │
-         ├─► Notifica MySQL via API / Servidor:
-         │   `UPDATE inventario SET equipado = TRUE WHERE id = ...`
-         │   `UPDATE personagens SET dano_base = ..., defesa_base = ...`
+         ▼
+[Servidor recebe equip_item/unequip_item]
          │
-         └─► Dispara EventBus: 'stats_updated' ──> [UIScene redesenha os atributos]
-
+         ├─► Encontra o item em player.inventario (dono implícito — array já é escopado ao jogador da conexão)
+         ├─► Se não encontrado → ignora silenciosamente
+         ├─► Se for equip_item e ITENS[item_id].tipo !== 'Equipamento' → recusa silenciosamente
+         │   (pendência registrada: sem feedback ao client — ver observações do Pacote 4)
+         ├─► Atualiza estado interno: item.equipado = true/false
+         ├─► Persiste na hora: UPDATE inventario SET equipado = ? WHERE id = ?
+         ├─► recalcularAtributosEfetivos(player):
+         │     base = calcularAtributosEfetivos(classe, nivel)
+         │     bonus = soma dos bonus_hp/bonus_dano/bonus_defesa dos itens com equipado=true
+         │     hp_max/dano_base/defesa_base = base + bonus (SÓ em memória — nunca grava em `personagens`)
+         │
+         └─► Envia ao client: 'inventory_update' + 'stats_updated' ──> [UIScene redesenha via EventBus]
 ```
 
 #### 2.3 Registro de Execução — Pacote 1: Identidade de Personagem e Trilho de Leitura do Banco (Status: ✅ Concluído)
@@ -215,9 +246,136 @@ CREATE TABLE IF NOT EXISTS itens_instanciados_mapa (
 **Observações registradas (não implementadas — fora do escopo do Pacote 1):**
 
 * O client Phaser (`ExploracaoCombate.js`) ainda **não envia** `join` — decisão do responsável pelo projeto foi manter a validação restrita a um cliente de teste dedicado neste pacote, deixando o jogo real inoperante até a fase de seleção de personagem existir. Nenhuma alteração foi feita no client.
-* Divergências de nomenclatura de protocolo entre este roadmap e o código (`player_join`/`join`, `pickup_item_request`/`pickup_item`, `player_attack`/`attack_enemy`) permanecem registradas e sem ação — reconciliação é escopo do **Pacote 5**.
+* ~~Divergências de nomenclatura de protocolo entre este roadmap e o código (`player_join`/`join`, `pickup_item_request`/`pickup_item`, `player_attack`/`attack_enemy`) permanecem registradas e sem ação — reconciliação é escopo do **Pacote 5**.~~ **Reconciliado no Pacote 5** — ver §1.2 acima, reescrita com os nomes/campos reais do código como fonte canônica.
 
-**Próximo passo:** Pacote 2 (Persistência de Volta e Sistema de Progressão XP/Nível), aguardando autorização explícita para início.
+**Próximo passo (histórico):** Pacote 2, então em aberto — ver registro de execução abaixo, agora concluído.
+
+#### 2.4 Registro de Execução — Pacote 2: Persistência de Volta e Sistema de Progressão (XP/Nível) (Status: ✅ Concluído)
+
+**O que foi feito:**
+
+* Ambiente MySQL provisionado do zero nesta máquina (instalação nova do MySQL 8.0.46): banco `rpg_game` criado, `server/schema.sql` aplicado, `server/seed_teste.sql` populado, usuário `rpg_app` recriado com privilégios mínimos (`SELECT/INSERT/UPDATE/DELETE` apenas em `rpg_game`), `server/.env` recriado localmente (git-ignorado).
+* Função `calcularAtributosEfetivos(classe, nivel)` extraída como helper compartilhado (elimina duplicação da fórmula de buff entre o `join` do Pacote 1 e a subida de nível do Pacote 2 — mesma fórmula, um único lugar).
+* Constante `XP_POR_INIMIGO = 50` (confirmado com o responsável pelo projeto antes da implementação, conforme pendência registrada no Apêndice A da spec).
+* Função `concederXP(player, quantidade)`: incrementa `experiencia`, sobe nível em loop (`while experiencia >= nivel*100`) cobrindo XP excedente de múltiplos limiares num único ganho, recalcula atributos efetivos em memória, grava `nivel`/`experiencia` no banco imediatamente e emite broadcast `level_up` com o payload exato da spec (`personagem_id, nivel, hp_max, dano_base, defesa_base, hp_atual`). Chamada de forma não bloqueante (fire-and-forget com `.catch`) a partir do evento `enemy_died`, para não travar o tick de 20Hz.
+* Snapshot periódico: `setInterval` dedicado a cada 10s, percorre `gameState.players` e grava `posicao_x, posicao_y, hp_atual` via `UPDATE`, com queries disparadas sem `await` bloqueante (erros apenas logados).
+* Save no disconnect: handler `ws.on('close', ...)` tornado assíncrono; antes de remover o jogador do `gameState`/trava de sessão, grava `posicao_x, posicao_y, hp_atual, nivel, experiencia` via `UPDATE`.
+* Script de teste dedicado `server/test_pacote2.js` (cliente WebSocket cru, **não faz parte do jogo**): conecta, dá `join`, move o personagem, ataca os inimigos disponíveis em sequência (gerando dano/XP/mortes/level-up) e fecha a conexão após um intervalo configurável — usado para validar todos os critérios sem depender do client Phaser (que ainda não envia `join`).
+
+**Resultado dos testes (critério obrigatório de `fase2_spec.md` §2.6 — todos os 6 itens passaram):**
+
+| # | Critério | Resultado |
+|---|---|---|
+| 1 | Persistência de posição (snapshot ~10s) | ✅ Validado isoladamente: personagem movido, conexão mantida aberta e confirmada viva via `kill -0` no instante t=11s; `SELECT` no banco já retornava `posicao_x=400, posicao_y=400` **antes** de qualquer disconnect |
+| 2 | Persistência de HP | ✅ Mago sofreu dano em combate; `hp_atual` refletido corretamente no banco após o disconnect (mesma query do snapshot cobre `hp_atual`) |
+| 3 | Ganho de XP | ✅ Cada `enemy_died` incrementou `experiencia` do `killerId` em 50, confirmado via `SELECT` |
+| 4 | Subida de nível | ✅ Mago (id=2) nível 1→2 ao atingir 100 XP (2 kills): `hp_max` 60→70, `dano_base` 40→45, `defesa_base` 3→5 (`base + 2×buff`), broadcast `level_up` emitido, atributos em memória aplicados imediatamente (3º ataque já usou `dano_base=45`), `nivel`/`experiencia` gravados no banco na hora |
+| 5 | Save no disconnect | ✅ Mago desconectado 5s após o 3º kill (bem antes do snapshot de 10s); banco refletiu exatamente `nivel=2, experiencia=50, hp_atual=-8, posicao_x=400, posicao_y=400` — só poderia ter vindo do save no `close` |
+| 6 | Não-bloqueio | ✅ Sequência de combate (mensagens a cada 500ms) e tick de 20Hz seguiram sem travamentos perceptíveis durante toda a bateria de testes |
+
+**Observações registradas (não implementadas — fora do escopo do Pacote 2):**
+
+* Sem mecânica de respawn/cura pós-morte do jogador — `player_died` já existia desde a Fase 0/1 e não foi endereçado aqui (fora de escopo; a spec não descreve esse comportamento para a Fase 2).
+* `hp_atual` negativo é persistido literalmente (sem clamp em zero) — comportamento pré-existente do cálculo de combate, não uma regressão introduzida neste pacote.
+* Dados de teste do banco (`personagens` id 1 e 2) ficaram com posição/HP/nível alterados pelos testes reais executados (não são mais os valores originais do seed) — states refletem o funcionamento real da persistência, não foram resetados.
+* Client Phaser (`ExploracaoCombate.js`) continua sem enviar `join` — mesma pendência registrada no Pacote 1, permanece fora de escopo até a fase de seleção de personagem.
+
+**Próximo passo (histórico):** Pacote 3, então em aberto — ver registro de execução abaixo, agora concluído.
+
+#### 2.5 Registro de Execução — Pacote 3: Correção de Bugs de Constituição (Higiene de Rede e Loop) (Status: ✅ Concluído)
+
+**O que foi feito (`ExploracaoCombate.js`):**
+
+* `this.moveSendAccumulator` (acumulador de tempo) e `this.movePayload` (objeto de payload reutilizável, criado uma única vez em `create()`) adicionados ao estado da cena.
+* `update()` mudado para `update(time, delta)`, usando o `delta` real do Phaser em vez de rodar sem noção de tempo decorrido.
+* Envio de `player_move` throttled: acumula `delta` e só envia quando o acumulador atinge `MOVE_SEND_INTERVAL_MS = 50` (subtraindo o intervalo do acumulador, não zerando, para não perder precisão ao longo do tempo) — de ~60 mensagens/s para no máximo ~20/s, alinhado ao tick do servidor.
+* Eliminada a alocação de objeto literal por frame: o payload é mutado (`movePayload.x/y/vx/vy`) em vez de recriado; `JSON.stringify` só roda no momento do envio já throttled (permitido pela spec).
+* Nenhuma mudança na lógica de interpolação, combate, renderização de HP ou no `onmessage` (fora de escopo, confirmado).
+
+**Resultado dos testes (critério obrigatório de `fase2_spec.md` §3.4 — todos os 3 itens passaram):**
+
+| # | Critério | Resultado |
+|---|---|---|
+| 1 | Frequência de envio (≤~20 msgs/s) | ✅ Medido ao vivo no navegador real do responsável pelo projeto: client conectou com `join` real (tanque de teste, id=5), personagem carregado via `welcome` real, movimento real por 10s cronometrados via `setTimeout` — resultado exato: **20.0 msgs/s, 200 mensagens em 10s** |
+| 2 | Suavidade preservada | ✅ Confirmado por análise de código (não testado visualmente com dois clients simultâneos): tick do servidor (`state_update`) já era fixo a 20Hz antes do Pacote 3, e a interpolação do receptor (lerp 0.15) não foi alterada — a granularidade real das posições vistas por outros jogadores já era limitada pelo servidor, não pelo client |
+| 3 | Zero alocação no loop | ✅ Confirmado por inspeção: `movePayload` criado uma única vez em `create()`, apenas mutado no caminho de envio; nenhum `{}`/`[]`/lambda novo dentro de `update()` nesse caminho |
+
+**Observações registradas:**
+
+* A medição do critério 1 exigiu que o client real enviasse `join` manualmente via DevTools (o client Phaser ainda não envia `join` sozinho — mesma pendência dos Pacotes 1/2, permanece fora de escopo). Nenhuma mudança de código foi feita para isso: usou-se o socket já existente da cena em runtime, através do próprio console do navegador, não injeção de estado (`playerStats`) nem alteração de arquivo.
+* Para viabilizar o teste, `window.__game = game` foi adicionado temporariamente a `main.js` e removido logo depois de validado — o arquivo final não contém esse hook.
+* Personagem tanque de teste (id=5) deixou de estar intocado: a sessão real de teste (com Pacote 2 já ativo) persistiu posição/HP reais dele via snapshot/disconnect.
+
+**Próximo passo (histórico):** Pacote 4, então em aberto — ver registro de execução abaixo, agora concluído.
+
+#### 2.6 Registro de Execução — Pacote 4: Sistema de Inventário (Status: ✅ Concluído)
+
+**Decisões confirmadas antes da implementação (fora do que a spec já travava):**
+
+* Nomes de mensagem `equip_item`/`unequip_item` confirmados exatamente como no §4.4.
+* Catálogo de itens (não especificado na spec — decisão nova): `espada_enferrujada { bonus_dano: 10 }` e `escudo_improvisado { bonus_defesa: 5, bonus_hp: 20 }`, ambos `tipo: 'Equipamento'`. Valores arbitrários de teste, não balanceamento.
+* Modelo de recálculo confirmado: atributo efetivo = `base_da_classe + buff(nivel) + soma_dos_itens_equipados`, sempre em memória, nunca gravado em `personagens.dano_base/defesa_base/hp_max`.
+* Itens de tipo diferente de `'Equipamento'` (ex.: `'Recurso'`) são recusados silenciosamente se o client tentar `equip_item` neles.
+* Equipamento de teste inserido direto no banco via SQL (padrão do Pacote 1), sem criar fluxo de obtenção de equipamento pelo mapa.
+
+**O que foi feito:**
+
+* Tabela `inventario` aplicada (`server/schema.sql`), idêntica ao §4.3.
+* `server/server.js`: catálogo `ITENS`, `calcularBonusEquipados()`, e `recalcularAtributosEfetivos()` — função única que combina `calcularAtributosEfetivos` (classe+nível) com a soma dos itens equipados; usada no `join`, na subida de nível (`concederXP`, que antes só considerava classe+nível — corrigido para não perder bônus de equipamento ao subir de nível) e no equipar/desequipar.
+* `join` agora também carrega `inventario` do personagem do banco.
+* `pickup_item` grava uma linha em `inventario` (`tipo='Recurso'`) a cada coleta de moeda, além de manter o `score` existente inalterado.
+* Handlers `equip_item`/`unequip_item`: validam posse (item precisa estar no inventário do próprio jogador) e tipo (`'Equipamento'` obrigatório para equipar), persistem `equipado` na hora (evento crítico), recalculam atributos em memória e respondem com `inventory_update` + `stats_updated`.
+* `UIScene.js` (nova cena Phaser paralela): grid de slots clique-equipar, ouve `inventory_update`/`stats_updated` via `this.game.events` (EventBus global do Phaser) e emite `inventory_action` no clique — nunca calcula atributos nem decide validade de equipar.
+* `ExploracaoCombate.js`: lança/para `UIScene`, repassa `inventory_update`/`stats_updated` recebidos do servidor pro EventBus, e encaminha `inventory_action` da UI pro socket.
+* `server/test_pacote4.js` (novo script de teste, não faz parte do jogo).
+
+**Resultado dos testes (critério de `fase2_spec.md` §4.6 + item extra aprovado pelo responsável do projeto — todos os 6 itens passaram):**
+
+| # | Critério | Resultado |
+|---|---|---|
+| 1 | Coleta persiste | ✅ Coletou moeda via `pickup_item` real, `SELECT` no banco confirmou a linha nova (`id=5, item_id='moeda', tipo='Recurso'`) |
+| 2 | Equipar altera atributos | ✅ Arqueiro (id=3) base `dano_base=35` → `45` ao equipar `espada_enferrujada` (+10), calculado pelo servidor |
+| 3 | Autoridade do servidor | ✅ Por inspeção de código: `UIScene`/`ExploracaoCombate` nunca calculam atributos localmente, só espelham `stats_updated` |
+| 4 | Desacoplamento | ✅ Por inspeção de código: `UIScene` só desenha e emite intenção de clique; toda regra de inventário vive no servidor |
+| 5 | Persistência de equipado | ✅ Desconectado com 2 itens equipados, reconectado: `welcome` já veio com `equipado=true` nos dois e atributos corretos, confirmado também via `SELECT` |
+| 6 | **(Novo)** Soma simultânea de dois itens | ✅ Personagem: **Arqueiro Teste (id=3)**, base nível 1 `hp_max=70, dano_base=35, defesa_base=3`. Equipando espada + escudo juntos: `hp_max=90 (70+20), dano_base=45 (35+10), defesa_base=8 (3+5)` — soma corretamente sobre a base de classe+nível |
+
+**Pendência de reconciliação registrada para o Pacote 5 (conforme instrução do responsável do projeto):**
+
+* O fluxograma "Fluxo de Atualização de Atributos ao Equipar Item" no §2.2 deste roadmap está desatualizado: ele descreve gravar `dano_base`/`defesa_base` diretamente na tabela `personagens` ao equipar, o que contradiz o modelo de recálculo travado em `fase2_spec.md` §1/§4.5 (atributos sempre derivados em memória, nunca persistidos). Esse fluxograma é resquício de uma versão anterior ao fechamento da Fase 2 e precisa ser reescrito no Pacote 5 para refletir o que foi realmente implementado (`recalcularAtributosEfetivos`).
+* ~~O servidor emite `level_up` mas `ExploracaoCombate.js` não tinha handler.~~ **Resolvido fora do Pacote 5** (ver nota abaixo — o responsável do projeto reclassificou isso como funcionalidade incompleta do Pacote 2, não higiene de código, e pediu correção imediata).
+* **Nova pendência — `equip_item`/`unequip_item` recusados são silenciosos.** Quando o servidor recusa um pedido de equipar (item não encontrado, ou `tipo !== 'Equipamento'`), ele simplesmente ignora a mensagem — nenhum aviso volta pro client. Mesma família de problema do `level_up` órfão: o servidor sabe de algo (o pedido foi negado) que o client nunca fica sabendo, então o jogador clica no slot e nada visivelmente acontece. Diferente do `level_up`, este NÃO tem contrato de rede definido em `fase2_spec.md` — resolver requer inventar um novo tipo de mensagem (ex.: `action_denied` ou `equip_rejected`), o que está fora do escopo travado do Pacote 5 (§5.1, que é só refatoração + reconciliação de documentação, não features novas). Registrado aqui para decisão explícita do responsável do projeto sobre quando/como endereçar — meu encaminhamento sugerido é: reusar o mesmo padrão de notificação já usado por `stats_updated`/`level_up` (uma mensagem servidor→client dedicada, consumida via o mesmo canal de EventBus), mas o contrato exato (nome, payload) precisa de aprovação antes de eu implementar.
+* Mesma pendência de sempre: client Phaser não envia `join` sozinho.
+
+**Correção aplicada fora do Pacote 5 (a pedido do responsável do projeto, antes de iniciar o Pacote 5):** `ExploracaoCombate.js` ganhou um handler mínimo para `level_up` — atualiza `playerStats` (nivel/hp_max/dano_base/defesa_base/hp_atual) e emite `stats_updated` no `game.events`, reusando exatamente o canal que a `UIScene` já ouvia desde o Pacote 4. Sem efeito visual elaborado (nenhum toast/popup), conforme escopo mínimo pedido. Não testado ao vivo no navegador nesta sessão — validado por inspeção de código, já que reusa literalmente o mesmo padrão do handler `stats_updated` (já testado no Pacote 4).
+
+**Próximo passo (histórico):** Pacote 5, então em aberto — ver registro de execução abaixo, agora concluído. **Fase 2 completa.**
+
+#### 2.7 Registro de Execução — Pacote 5: Higiene de Código e Reconciliação da Documentação (Status: ✅ Concluído)
+
+**O que foi feito:**
+
+* **Correção pré-Pacote 5 (a pedido explícito do responsável do projeto, reclassificada como funcionalidade incompleta do Pacote 2, não higiene):** handler `level_up` implementado em `ExploracaoCombate.js`.
+* **Refatoração do `onmessage`** (§5.1.1): a cadeia `if/else` por `data.type` em `ExploracaoCombate.js` foi substituída por um mapa `this.messageHandlers` (tipo → método) montado uma vez em `initMultiplayer()`, com `onmessage` reduzido a um lookup + chamada. Cada branch virou um método de instância (`handleWelcome`, `handlePlayerJoined`, `handlePlayerLeft`, `handleItemDespawned`, `handleItemsRespawned`, `handleCombatEvent`, `handleEnemyDied`, `handlePlayerDied`, `handleLevelUp`, `handleInventoryUpdate`, `handleStatsUpdated`, `handleStateUpdate`), com o corpo de cada um mantido 1:1 idêntico ao código anterior — refatoração puramente estrutural, sem mudança de comportamento (§5.2, "não reescrever sistemas que já passaram nos testes só por estética" respeitado: nada foi reescrito, só reorganizado).
+* **Reconciliação de nomenclatura** (§5.1.2): `roadmap_game.md` §1.2 (protocolo de rede da Fase 1) estava desatualizado desde antes da Fase 2 — descrevia mensagens que nunca foram implementadas (`player_join`, `player_spawned`, `player_updated`, `player_attack` com `habilidade_id`/`direcao`, `pickup_item_request`, sistema de crítico, token de auth). Reescrito para refletir exatamente os nomes/campos reais do código (`join`, `welcome`, `player_joined`, `state_update`, `attack_enemy`, `pickup_item`, etc.) — **o código tratado como fonte canônica**, não o documento antigo, conforme decisão de não reescrever sistemas já testados só por estética. Uma outra menção obsoleta (`use_skill`, `item_pickup`) em §1 também foi corrigida para os nomes reais.
+* **Decisões da Fase 2 registradas formalmente** (§5.1.2, segunda parte): nova seção §1.1 "Decisões Travadas da Fase 2" no roadmap — WebSocket-only, modelo de recálculo de atributos, molde de classe/catálogo de itens hardcoded, persistência escalonada, e lista de itens formalmente adiados (login, tabela `classes`, `itens_instanciados_mapa`, Redis, anti-cheat de posição).
+* **Fluxograma §2.2 reescrito** para refletir o fluxo real implementado no Pacote 4 (`UIScene` → EventBus → socket → servidor → `recalcularAtributosEfetivos` → `inventory_update`/`stats_updated`), substituindo a versão antiga que descrevia gravar atributos direto em `personagens`.
+* Esta spec (`fase2_spec.md`) incorporada ao roadmap oficial como registro da Fase 2 (§5.1.3) — os registros de execução §2.3-§2.7 desta seção cumprem esse papel.
+
+**Resultado dos testes (critério obrigatório de `fase2_spec.md` §5.3 — os 2 itens passaram):**
+
+| # | Critério | Resultado |
+|---|---|---|
+| 1 | Paridade funcional pós-refatoração | ✅ Reexecutados ao vivo: Pacote 1 (`test_join.js`, guerreiro id=1 — carregamento real confirmado), Pacote 2 (`test_pacote2.js`, guerreiro id=1 — 2 kills → 100 XP → nível 2, `hp_max=110, dano_base=30, defesa_base=7`, exatamente igual ao comportamento pré-refatoração), Pacote 4 (`test_pacote4.js`, arqueiro id=3, inventário resetado pra estado limpo — recusa de item Recurso, soma simultânea `hp_max=90/dano_base=45/defesa_base=8`, persistência no reconnect, todos idênticos ao resultado original). A refatoração do Pacote 5 é só client-side (`ExploracaoCombate.js`); o servidor não foi alterado, então esses testes também confirmam que nada no servidor regrediu |
+| 2 | Documentação consistente | ✅ `roadmap_game.md` §1.2 reescrita com nomes reais; pendência de nomenclatura marcada como resolvida; decisões da Fase 2 registradas em §1.1; fluxograma §2.2 reescrito |
+
+**Observações registradas (não implementadas — fora do escopo do Pacote 5):**
+
+* O handler client-side refatorado (`onmessage`/`messageHandlers`) não foi validado ao vivo no navegador nesta sessão — a extração de cada branch pra método foi mecânica (corpo idêntico, só movido), verificada por inspeção de código e checagem de sintaxe. Testar no navegador continua disponível a pedido.
+* **Pendência ainda aberta, não resolvida neste pacote:** feedback de `equip_item`/`unequip_item` recusado — ver observação registrada no Pacote 4 (§2.6). Precisa de um contrato de rede novo, fora do escopo travado do Pacote 5, aguardando decisão do responsável do projeto.
+* Mesma pendência de sempre: client Phaser não envia `join` sozinho.
+
+**Próximo passo:** Fase 2 (Persistência MySQL, Identidade de Personagem e Progressão) está **formalmente concluída** — Pacotes 1 a 5 implementados, testados e documentados. Próxima decisão do responsável do projeto: iniciar a Fase 3 (Level Design Avançado, Tilemaps & Spatial Partitioning) ou resolver a pendência do feedback de equip recusado antes.
 
 ---
 
@@ -330,11 +488,11 @@ findSafeDropPosition(originX, originY, tilemapLayer) {
 
 ## 6. Estado Exato para Retomada (Próxima Sessão de Código)
 
-**Ponto de Parada Atual:** Fase 2 / **Pacote 1 concluído e validado** (ver §2.3 acima e `fase2_spec.md`). O servidor já lê identidade real de personagem do MySQL (`rpg_game`), aplica molde de classe + buff de nível, e mantém trava de sessão em memória. **O servidor ainda não grava nada no banco** — isso é o Pacote 2.
+**Ponto de Parada Atual:** **Fase 2 completa — Pacotes 1 a 5 concluídos e validados** (ver §2.3-§2.7 acima e `fase2_spec.md`). O servidor lê identidade real do MySQL (personagem + inventário), aplica molde de classe + buff de nível + bônus de itens equipados (tudo em um único recálculo em memória, nunca persistido em `personagens`), grava snapshot periódico/disconnect/XP-nível/inventário, o client envia `player_move` throttled a ~20Hz e reage a `level_up`/`stats_updated`/`inventory_update` via um dispatch de handlers (não mais cadeia if/else). O Phaser roda duas cenas em paralelo durante o combate: `ExploracaoCombate` (jogo) e `UIScene` (inventário, apenas renderização). Documentação (`roadmap_game.md`) reconciliada com o código real — sem mais divergências de nomenclatura de protocolo conhecidas.
 
-1. **Banco já de pé:** schema aplicado e 5 personagens de teste populados (`server/schema.sql`, `server/seed_teste.sql`). Usuário dedicado `rpg_app` configurado; credenciais em `server/.env` (git-ignorado, não commitar).
-2. **Próxima ação:** iniciar o **Pacote 2 — Persistência de Volta e Sistema de Progressão (XP/Nível)** de `fase2_spec.md`, mediante autorização explícita: snapshot periódico (~10s) de posição/HP, save no `disconnect`, ganho de XP ao matar inimigo, subida de nível com recálculo em memória e broadcast `level_up`.
-3. **Ainda pendente (fora dos pacotes já feitos):** client Phaser (`ExploracaoCombate.js`) não envia `join` — jogo real via browser não entra em campo até isso ser endereçado numa fase futura (seleção de personagem). Tabela `inventario` e `UIScene` seguem para o Pacote 4.
+1. **Banco já de pé:** schema completo aplicado (`jogadores`, `personagens`, `inventario` — `server/schema.sql`) e personagens de teste populados (`server/seed_teste.sql`). Usuário dedicado `rpg_app` configurado; credenciais em `server/.env` (git-ignorado, não commitar). Dados de teste dos personagens 1, 2, 3 e 5 já não são mais os valores originais do seed (refletem os testes reais executados ao longo dos Pacotes 2-5).
+2. **Próxima ação:** decisão do responsável do projeto entre (a) iniciar a **Fase 3 — Level Design Avançado, Tilemaps & Spatial Partitioning**, ou (b) resolver primeiro a pendência aberta do feedback de `equip_item`/`unequip_item` recusado (precisa de um contrato de rede novo — nome e payload — que ainda não foi aprovado).
+3. **Ainda pendente:** client Phaser não envia `join` sozinho — mesma pendência desde o Pacote 1, segue sem endereçamento (depende de uma fase futura de seleção de personagem). Feedback de equip recusado (ver item 2b acima).
 
 ---
 

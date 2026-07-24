@@ -1,5 +1,5 @@
 const path = require('path');
-require('dotenv').config({ path: path.join(__dirname, '.env') });
+require('dotenv').config({ path: path.join(__dirname, '.env'), quiet: true });
 const WebSocket = require('ws');
 const mysql = require('mysql2/promise');
 
@@ -26,6 +26,51 @@ const CLASSES = {
 const BUFF_HP = 10;
 const BUFF_DANO = 5;
 const BUFF_DEFESA = 2;
+const XP_POR_INIMIGO = 50; // fase2_spec.md Apêndice A (confirmado no Pacote 2)
+
+// Deriva os atributos efetivos (hp_max/dano_base/defesa_base) a partir do molde da classe + buff de nível.
+// Usado tanto no carregamento (join) quanto na subida de nível.
+function calcularAtributosEfetivos(classe, nivel) {
+    const molde = CLASSES[classe];
+    if (!molde) return null;
+    const niveisAcima = nivel - 1;
+    return {
+        hp_max: molde.hp_max + niveisAcima * BUFF_HP,
+        dano_base: molde.dano_base + niveisAcima * BUFF_DANO,
+        defesa_base: molde.defesa_base + niveisAcima * BUFF_DEFESA
+    };
+}
+
+// Catálogo de itens. Valores arbitrários de teste (não finais). Só 'Equipamento' pode ser equipado.
+const ITENS = {
+    espada_enferrujada: { tipo: 'Equipamento', bonus_dano: 10, bonus_defesa: 0, bonus_hp: 0 },
+    escudo_improvisado: { tipo: 'Equipamento', bonus_dano: 0, bonus_defesa: 5, bonus_hp: 20 }
+};
+
+// Soma os bônus dos itens equipados de um inventário (array de linhas da tabela `inventario`).
+function calcularBonusEquipados(inventario) {
+    const bonus = { bonus_hp: 0, bonus_dano: 0, bonus_defesa: 0 };
+    for (const item of inventario) {
+        if (!item.equipado) continue;
+        const def = ITENS[item.item_id];
+        if (!def) continue;
+        bonus.bonus_hp += def.bonus_hp;
+        bonus.bonus_dano += def.bonus_dano;
+        bonus.bonus_defesa += def.bonus_defesa;
+    }
+    return bonus;
+}
+
+// Recálculo único de atributos efetivos: base da classe+nível (calcularAtributosEfetivos)
+// + soma dos itens equipados. Nunca persiste hp_max/dano_base/defesa_base em `personagens`
+// (fase2_spec.md §1/§4.5 — modelo de recálculo, sem segundo sistema de atributos).
+function recalcularAtributosEfetivos(player) {
+    const base = calcularAtributosEfetivos(player.classe, player.nivel);
+    const bonus = calcularBonusEquipados(player.inventario);
+    player.hp_max = base.hp_max + bonus.bonus_hp;
+    player.dano_base = base.dano_base + bonus.bonus_dano;
+    player.defesa_base = base.defesa_base + bonus.bonus_defesa;
+}
 
 const wss = new WebSocket.Server({ port: 8080 });
 console.log('🚀 Servidor WebSocket AUTORITÁRIO iniciado (Tick Rate: 20Hz)');
@@ -101,17 +146,20 @@ wss.on('connection', (ws) => {
                 }
 
                 const row = rows[0];
-                const molde = CLASSES[row.classe];
-                if (!molde) {
+                if (!CLASSES[row.classe]) {
                     console.error(`[join] Classe desconhecida para personagem ${requestedId}: ${row.classe}`);
                     ws.close(4000, 'Classe de personagem inválida');
                     return;
                 }
 
-                const niveisAcima = row.nivel - 1;
-                const hp_max = molde.hp_max + niveisAcima * BUFF_HP;
-                const dano_base = molde.dano_base + niveisAcima * BUFF_DANO;
-                const defesa_base = molde.defesa_base + niveisAcima * BUFF_DEFESA;
+                let invRows;
+                try {
+                    [invRows] = await pool.query('SELECT * FROM inventario WHERE personagem_id = ?', [requestedId]);
+                } catch (dbErr) {
+                    console.error('[join] Erro ao consultar inventário:', dbErr);
+                    ws.close(4000, 'Erro ao carregar inventário');
+                    return;
+                }
 
                 personagemId = requestedId;
                 activeSessions.add(personagemId);
@@ -126,9 +174,11 @@ wss.on('connection', (ws) => {
                     y: row.posicao_y,
                     vx: 0, vy: 0,
                     hp_atual: row.hp_atual,
-                    hp_max, dano_base, defesa_base,
+                    hp_max: 0, dano_base: 0, defesa_base: 0, // recalculado logo abaixo
+                    inventario: invRows,
                     score: 0
                 };
+                recalcularAtributosEfetivos(gameState.players[personagemId]);
 
                 console.log(`[+] Personagem ${personagemId} (${row.nome}, ${row.classe}, nível ${row.nivel}) entrou.`);
 
@@ -157,16 +207,56 @@ wss.on('connection', (ws) => {
                 if (gameState.items[data.itemId]) {
                     delete gameState.items[data.itemId]; // Remove do server
                     player.score += 10;
-                    
+
+                    // Grava no inventário real (evento crítico — grava na hora, fase2_spec.md §1)
+                    try {
+                        const [result] = await pool.query(
+                            'INSERT INTO inventario (personagem_id, item_id, quantidade, tipo) VALUES (?, ?, 1, ?)',
+                            [personagemId, 'moeda', 'Recurso']
+                        );
+                        player.inventario.push({ id: result.insertId, personagem_id: personagemId, item_id: 'moeda', quantidade: 1, tipo: 'Recurso', equipado: 0 });
+                        ws.send(JSON.stringify({ type: 'inventory_update', personagem_id: personagemId, itens: player.inventario }));
+                    } catch (dbErr) {
+                        console.error(`[pickup_item] Erro ao gravar item no inventário de ${personagemId}:`, dbErr);
+                    }
+
                     // Avisa todo mundo que sumiu e quem pegou
                     broadcast({ type: 'item_despawned', itemId: data.itemId, playerId: personagemId });
-                    
+
                     // Se as moedas acabaram, invoca mais!
                     if (Object.keys(gameState.items).length === 0) {
                         spawnMoedas();
                         broadcast({ type: 'items_respawned', items: gameState.items });
                     }
                 }
+            }
+            // AÇÃO: Equipar/desequipar item do inventário
+            else if (data.type === 'equip_item' || data.type === 'unequip_item') {
+                const querEquipar = data.type === 'equip_item';
+                const item = player.inventario.find(i => i.id === data.inventario_id);
+
+                if (!item) return; // Item não encontrado no inventário deste jogador — ignora
+                if (querEquipar && ITENS[item.item_id]?.tipo !== 'Equipamento') return; // Só Equipamento pode ser equipado
+
+                item.equipado = querEquipar;
+
+                try {
+                    await pool.query('UPDATE inventario SET equipado = ? WHERE id = ?', [querEquipar, item.id]);
+                } catch (dbErr) {
+                    console.error(`[${data.type}] Erro ao gravar equipado de ${item.id}:`, dbErr);
+                }
+
+                recalcularAtributosEfetivos(player);
+
+                ws.send(JSON.stringify({ type: 'inventory_update', personagem_id: personagemId, itens: player.inventario }));
+                ws.send(JSON.stringify({
+                    type: 'stats_updated',
+                    personagem_id: personagemId,
+                    hp_max: player.hp_max,
+                    dano_base: player.dano_base,
+                    defesa_base: player.defesa_base,
+                    hp_atual: player.hp_atual
+                }));
             }
             // AÇÃO: Combate (Encostou no Inimigo)
             else if (data.type === 'attack_enemy') {
@@ -193,6 +283,7 @@ wss.on('connection', (ws) => {
                         delete gameState.enemies[enemy.id];
                         player.score += 50;
                         broadcast({ type: 'enemy_died', enemyId: enemy.id, killerId: player.id });
+                        concederXP(player, XP_POR_INIMIGO).catch(err => console.error('[XP] Erro ao processar XP/nível:', err));
                     }
                     // Verifica morte do Jogador
                     if (player.hp_atual <= 0) {
@@ -205,9 +296,22 @@ wss.on('connection', (ws) => {
         }
     });
 
-    ws.on('close', () => {
+    ws.on('close', async () => {
         if (personagemId !== null) {
             console.log(`[-] Personagem Desconectado: ${personagemId}`);
+
+            const player = gameState.players[personagemId];
+            if (player) {
+                try {
+                    await pool.query(
+                        'UPDATE personagens SET posicao_x = ?, posicao_y = ?, hp_atual = ?, nivel = ?, experiencia = ? WHERE id = ?',
+                        [player.x, player.y, player.hp_atual, player.nivel, player.experiencia, player.id]
+                    );
+                } catch (dbErr) {
+                    console.error(`[disconnect] Erro ao gravar estado final de ${personagemId}:`, dbErr);
+                }
+            }
+
             delete gameState.players[personagemId];
             activeSessions.delete(personagemId);
             broadcast({ type: 'player_left', id: personagemId });
@@ -216,6 +320,42 @@ wss.on('connection', (ws) => {
         }
     });
 });
+
+// Concede XP a um jogador, processa subida(s) de nível (em loop, cobrindo XP excedente)
+// e persiste nível/experiência imediatamente quando há subida. Não bloqueia o tick loop.
+async function concederXP(player, quantidade) {
+    player.experiencia += quantidade;
+
+    let subiuNivel = false;
+    while (player.experiencia >= player.nivel * 100) {
+        player.experiencia -= player.nivel * 100;
+        player.nivel += 1;
+        subiuNivel = true;
+    }
+
+    if (!subiuNivel) return;
+
+    recalcularAtributosEfetivos(player); // classe+nível + itens equipados, nunca só classe+nível
+
+    try {
+        await pool.query(
+            'UPDATE personagens SET nivel = ?, experiencia = ? WHERE id = ?',
+            [player.nivel, player.experiencia, player.id]
+        );
+    } catch (dbErr) {
+        console.error(`[level_up] Erro ao gravar nível de ${player.id}:`, dbErr);
+    }
+
+    broadcast({
+        type: 'level_up',
+        personagem_id: player.id,
+        nivel: player.nivel,
+        hp_max: player.hp_max,
+        dano_base: player.dano_base,
+        defesa_base: player.defesa_base,
+        hp_atual: player.hp_atual
+    });
+}
 
 // ────────────────────────────────────────────────────────
 // TICK LOOP DO SERVIDOR (Movendo os Inimigos Autorativamente)
@@ -246,6 +386,20 @@ setInterval(() => {
         if (client.readyState === WebSocket.OPEN) client.send(payload);
     });
 }, TICK_RATE);
+
+// ────────────────────────────────────────────────────────
+// SNAPSHOT PERIÓDICO (Pacote 2 — grava posição/HP a cada ~10s, sem bloquear o tick de 20Hz)
+// ────────────────────────────────────────────────────────
+const SNAPSHOT_INTERVAL = 10000;
+setInterval(() => {
+    for (const id in gameState.players) {
+        const p = gameState.players[id];
+        pool.query(
+            'UPDATE personagens SET posicao_x = ?, posicao_y = ?, hp_atual = ? WHERE id = ?',
+            [p.x, p.y, p.hp_atual, p.id]
+        ).catch(err => console.error(`[snapshot] Erro ao gravar personagem ${p.id}:`, err));
+    }
+}, SNAPSHOT_INTERVAL);
 
 function broadcast(data, excludeWs = null) {
     const payload = JSON.stringify(data);
