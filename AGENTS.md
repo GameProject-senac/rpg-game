@@ -101,12 +101,14 @@ Antes de propor ou escrever qualquer código, execute mentalmente esta sequênci
 
 ## 06. Ciclo de Cenas & Máquina de Estados Finitos (FSM)
 
-A aplicação é governada por uma FSM determinística. Toda transição entre ambientes do jogo ocorre exclusivamente através das 6 cenas declaradas:
+A aplicação é governada por uma FSM determinística. Toda transição entre ambientes do jogo ocorre exclusivamente através das 7 cenas declaradas:
 
 ```
-[Boot] ──> [Preload] ──> [MainMenu] ──> [Loading] ──> [HubCentral] <──> [ExploracaoCombate]
+[Boot] ──> [Preload] ──> [MainMenu] ──> [SelecaoPersonagem] ──> [Loading] ──> [HubCentral] <──> [ExploracaoCombate]
 
 ```
+
+> **Atualizado na correção do teste de campo da Fase 2:** `SelecaoPersonagem` foi adicionada à FSM (6→7 cenas) para permitir que o jogador escolha qual personagem controlar sem depender de injeção manual via DevTools. Não é uma cena de login — apenas seleção sobre personagens já existentes no banco (login continua fora de escopo). Ver `roadmap_game.md` §1.1 para o modelo de posse (pool compartilhado sem dono, até login existir) e para o modelo de conexão (Modelo B atual / Modelo A alvo).
 
 ### CONTRATO DE TRANSIÇÃO DE CENAS
 

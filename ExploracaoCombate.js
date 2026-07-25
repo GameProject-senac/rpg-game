@@ -3,6 +3,8 @@
  * @description Cena de exploração e combate (Client 100% Subordinado ao Server Node.js)
  */
 
+import { SERVER_URL, sendMessage } from './networkConfig.js';
+
 export class ExploracaoCombate extends Phaser.Scene {
 
     constructor() {
@@ -11,6 +13,11 @@ export class ExploracaoCombate extends Phaser.Scene {
 
     create() {
         this.score = 0;
+        // Causa A (teste de campo Fase 2): playerStats/myId NÃO eram resetados aqui, então
+        // sobreviviam zumbis a um scene.restart() — o guard `if (!this.playerStats) return`
+        // do update() parava de proteger porque o objeto antigo continuava truthy.
+        this.playerStats = null;
+        this.myId = null;
         this.physics.world.setBounds(0, 0, 2000, 2000);
         this.cameras.main.setBounds(0, 0, 2000, 2000);
 
@@ -43,7 +50,7 @@ export class ExploracaoCombate extends Phaser.Scene {
         // Colisões de Interação (Eventos enviados para o Servidor)
         this.physics.add.overlap(this.player, this.itemsGroup, (p, itemSprite) => {
             if (this.socket && this.socket.readyState === WebSocket.OPEN) {
-                this.socket.send(JSON.stringify({ type: 'pickup_item', itemId: itemSprite.serverId }));
+                sendMessage(this.socket, { type: 'pickup_item', itemId: itemSprite.serverId });
                 // Oculta localmente (Client-side Prediction)
                 itemSprite.setVisible(false);
                 itemSprite.body.enable = false;
@@ -52,8 +59,8 @@ export class ExploracaoCombate extends Phaser.Scene {
 
         this.physics.add.collider(this.player, this.enemiesGroup, (p, enemySprite) => {
             if (!this.player.invulnerable && this.socket && this.socket.readyState === WebSocket.OPEN) {
-                this.socket.send(JSON.stringify({ type: 'attack_enemy', enemyId: enemySprite.serverId }));
-                
+                sendMessage(this.socket, { type: 'attack_enemy', enemyId: enemySprite.serverId });
+
                 // Cooldown local para não flodar a rede
                 this.player.invulnerable = true;
                 this.time.delayedCall(500, () => this.player.invulnerable = false);
@@ -72,7 +79,7 @@ export class ExploracaoCombate extends Phaser.Scene {
         // UIScene (inventário) roda em paralelo — só desenha o que o servidor manda via EventBus.
         this.scene.launch('UIScene');
         this.onInventoryAction = (msg) => {
-            if (this.socket && this.socket.readyState === WebSocket.OPEN) this.socket.send(JSON.stringify(msg));
+            if (this.socket && this.socket.readyState === WebSocket.OPEN) sendMessage(this.socket, msg);
         };
         this.game.events.on('inventory_action', this.onInventoryAction);
 
@@ -88,8 +95,20 @@ export class ExploracaoCombate extends Phaser.Scene {
     }
 
     initMultiplayer() {
-        this.socket = new WebSocket('ws://localhost:8080');
-        this.socket.onopen = () => console.log('Conectado ao servidor autoritário!');
+        this.socket = new WebSocket(SERVER_URL);
+
+        // Join automático (item 3): cobre tanto a primeira conexão quanto a reabertura do
+        // socket após scene.restart() — initMultiplayer() roda de novo em todo create().
+        // O id vem do registry, gravado pela SelecaoPersonagem.
+        this.socket.onopen = () => {
+            console.log('Conectado ao servidor autoritário!');
+            const personagemId = this.registry.get('personagem_id');
+            if (personagemId === undefined || personagemId === null) {
+                console.error('[ExploracaoCombate] Sem personagem_id no registry — join não enviado.');
+                return;
+            }
+            sendMessage(this.socket, { type: 'join', personagem_id: personagemId });
+        };
 
         // Despacho por mapa de handlers em vez de cadeia if/else (fase2_spec.md Pacote 5, §5.1.1).
         this.messageHandlers = {
@@ -111,6 +130,7 @@ export class ExploracaoCombate extends Phaser.Scene {
             const data = JSON.parse(event.data);
             const handler = this.messageHandlers[data.type];
             if (handler) handler(data);
+            else console.warn('[ExploracaoCombate] Mensagem sem handler registrado:', data.type, data);
         };
     }
 
@@ -335,7 +355,7 @@ export class ExploracaoCombate extends Phaser.Scene {
                 this.movePayload.y = this.player.y;
                 this.movePayload.vx = this.player.body.velocity.x;
                 this.movePayload.vy = this.player.body.velocity.y;
-                this.socket.send(JSON.stringify(this.movePayload));
+                sendMessage(this.socket, this.movePayload);
             }
         }
     }

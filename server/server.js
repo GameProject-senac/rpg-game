@@ -85,6 +85,20 @@ const gameState = {
 // Trava de sessão em memória: personagem_id ativos no momento (efêmera, não persiste).
 const activeSessions = new Set();
 
+// Remove um personagem da autoridade do servidor de forma SÍNCRONA (gameState.players e
+// activeSessions liberados antes de qualquer await) — usada tanto no close do socket quanto
+// na morte do jogador, para não depender do timing do handshake de close (corrida corrigida
+// no teste de campo da Fase 2: join do reconecte chegando antes do close antigo ser processado).
+// A gravação no banco roda em background sem bloquear a liberação.
+function liberarPersonagem(player) {
+    delete gameState.players[player.id];
+    activeSessions.delete(player.id);
+    pool.query(
+        'UPDATE personagens SET posicao_x = ?, posicao_y = ?, hp_atual = ?, nivel = ?, experiencia = ? WHERE id = ?',
+        [player.x, player.y, player.hp_atual, player.nivel, player.experiencia, player.id]
+    ).catch(err => console.error(`[liberarPersonagem] Erro ao gravar estado final de ${player.id}:`, err));
+}
+
 let nextEnemyId = 1;
 let nextItemId = 1;
 
@@ -120,6 +134,28 @@ wss.on('connection', (ws) => {
     ws.on('message', async (message) => {
         try {
             const data = JSON.parse(message);
+
+            // Seleção de personagem: pool compartilhado sem dono (sem login — ver roadmap_game.md §1.1).
+            // Funciona sem join prévio; conexão de listagem é curta e independente (Modelo B).
+            if (data.type === 'list_characters') {
+                let rows;
+                try {
+                    [rows] = await pool.query('SELECT id, nome, classe, nivel FROM personagens');
+                } catch (dbErr) {
+                    console.error('[list_characters] Erro ao consultar personagens:', dbErr);
+                    ws.send(JSON.stringify({ type: 'character_list', personagens: [] }));
+                    return;
+                }
+                const personagens = rows.map(row => ({
+                    id: row.id,
+                    nome: row.nome,
+                    classe: row.classe,
+                    nivel: row.nivel,
+                    em_uso: activeSessions.has(row.id)
+                }));
+                ws.send(JSON.stringify({ type: 'character_list', personagens }));
+                return;
+            }
 
             if (data.type === 'join') {
                 const requestedId = data.personagem_id;
@@ -288,6 +324,11 @@ wss.on('connection', (ws) => {
                     // Verifica morte do Jogador
                     if (player.hp_atual <= 0) {
                         broadcast({ type: 'player_died', playerId: player.id });
+                        // Libera a sessão AGORA, não no close do socket antigo — elimina a corrida
+                        // com o join automático do reconecte. Ordem importa: liberarPersonagem(player)
+                        // precisa rodar antes de zerar personagemId, senão perdemos a referência.
+                        liberarPersonagem(player);
+                        personagemId = null;
                     }
                 }
             }
@@ -296,27 +337,18 @@ wss.on('connection', (ws) => {
         }
     });
 
-    ws.on('close', async () => {
+    ws.on('close', () => {
+        // personagemId já vem null aqui se a sessão foi liberada na morte (ver attack_enemy) —
+        // vira no-op automático, sem flag extra, sem persistir/remover/broadcast em duplicidade.
         if (personagemId !== null) {
             console.log(`[-] Personagem Desconectado: ${personagemId}`);
 
             const player = gameState.players[personagemId];
-            if (player) {
-                try {
-                    await pool.query(
-                        'UPDATE personagens SET posicao_x = ?, posicao_y = ?, hp_atual = ?, nivel = ?, experiencia = ? WHERE id = ?',
-                        [player.x, player.y, player.hp_atual, player.nivel, player.experiencia, player.id]
-                    );
-                } catch (dbErr) {
-                    console.error(`[disconnect] Erro ao gravar estado final de ${personagemId}:`, dbErr);
-                }
-            }
+            if (player) liberarPersonagem(player);
 
-            delete gameState.players[personagemId];
-            activeSessions.delete(personagemId);
             broadcast({ type: 'player_left', id: personagemId });
         } else {
-            console.log('[-] Conexão encerrada antes de qualquer join.');
+            console.log('[-] Conexão encerrada antes de qualquer join (ou já liberada por morte).');
         }
     });
 });

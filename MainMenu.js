@@ -23,8 +23,8 @@ export class MainMenu extends Phaser.Scene {
 
         // Configura a tecla Espaço
         this.input.keyboard.once('keydown-SPACE', () => {
-            // Chama o Loading e avisa que o destino final é o HubCentral
-            this.scene.start('Loading', { destino: 'HubCentral' });
+            // Antes de ir para o Loading, o jogador escolhe qual personagem controlar
+            this.scene.start('SelecaoPersonagem');
         });
 
         // Prevenção de vazamento de memória (Regra de Transição de Cenas)
