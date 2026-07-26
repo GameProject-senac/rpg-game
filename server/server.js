@@ -220,7 +220,8 @@ wss.on('connection', (ws) => {
                     vx: 0, vy: 0,
                     hp_atual: row.hp_atual,
                     hp_max: 0, dano_base: 0, defesa_base: 0, // recalculado logo abaixo
-                    inventario: invRows
+                    inventario: invRows,
+                    inventarioAberto: false
                 };
                 const player = gameState.players[personagemId];
                 recalcularAtributosEfetivos(player);
@@ -265,8 +266,18 @@ wss.on('connection', (ws) => {
             if (!player || player.hp_atual <= 0) return; // Mortos não agem
 
             if (data.type === 'player_move') {
-                player.x = data.x; player.y = data.y; 
+                if (player.inventarioAberto) return; // Estático enquanto o inventário está aberto
+                player.x = data.x; player.y = data.y;
                 player.vx = data.vx; player.vy = data.vy;
+            }
+            // AÇÃO: Abrir/fechar o inventário — enquanto aberto, o jogador fica estático e imune
+            // (ver guardas em player_move e attack_enemy). Sem timer: dura até o próprio
+            // inventory_close, ou até a sessão ser liberada (ver liberarPersonagem/ws.on('close')).
+            else if (data.type === 'inventory_open') {
+                player.inventarioAberto = true;
+            }
+            else if (data.type === 'inventory_close') {
+                player.inventarioAberto = false;
             }
             // AÇÃO: Equipar/desequipar item do inventário
             else if (data.type === 'equip_item' || data.type === 'unequip_item') {
@@ -299,7 +310,10 @@ wss.on('connection', (ws) => {
             // AÇÃO: Combate (Encostou no Inimigo)
             else if (data.type === 'attack_enemy') {
                 const enemy = gameState.enemies[data.enemyId];
-                if (enemy) {
+                // Inventário aberto (Passo 1): fora de combate por completo — pula o toque inteiro,
+                // nem o jogador nem o inimigo tomam dano. Sem isso, o inimigo ainda tomava dano
+                // (e podia morrer sozinho batendo no jogador imune) mesmo com o menu aberto.
+                if (enemy && !player.inventarioAberto) {
                     // Invulnerabilidade de respawn (Round 1): autoritária aqui, não no client —
                     // concedida no join (ver comentário em `reviveu`) e checada por tempo, sem
                     // precisar de timer/cleanup — expira sozinha quando Date.now() ultrapassa.

@@ -3,8 +3,8 @@
 > **Documento único.** Este arquivo incorpora integralmente o que antes vivia em `fase2_spec.md` (especificação de execução da Fase 2, agora §9, histórico) e `fase2finalizacao.md` (achados de teste de campo e fechamento da Fase 2, agora §3 · FASE 2 §2.8-§2.11). Os dois arquivos separados foram descontinuados em 2026-07-26 para garantir uma fonte única de verdade documental — nenhuma informação foi descartada na fusão, só reorganizada. Referências a "fase2_spec.md §X" em comentários de código (`UIScene.js`, `ExploracaoCombate.js`, `server/server.js`) continuam válidas: a numeração interna da especificação original foi preservada no §9.
 
 **Status Atualizado:**
-A **Fase 1 (Multiplayer LAN & WebSockets)** e a **Fase 2 (Persistência MySQL, Identidade de Personagem e Progressão)** estão **formalmente concluídas e validadas em teste de campo manual** (2026-07-26). A Fase 2 foi executada em 5 pacotes sequenciais especificados em §9 (histórico), todos implementados, testados e documentados (ver §2.3-§2.7), e em seguida passou por dois rounds de correção pós-teste-de-campo (§2.8-§2.10) até fechar por completo (§2.11). O servidor MySQL local (`rpg_game`) está de pé, com schema completo (`jogadores`, `personagens`, `inventario`), personagens de teste populados e usuário dedicado `rpg_app` operante. O servidor grava no banco em tempo real: snapshot periódico (~10s), save no disconnect, XP/nível e inventário/equipamento (eventos críticos, gravação imediata).
-**Foco Atual (Estado de parada):** Fase 2 **completa e fechada de ponta a ponta** — fluxo real (seleção de personagem → combate → morte → respawn com imunidade → progressão persistente) validado pelo dono do projeto sem depender de DevTools. **Próxima sessão começa por alinhamento de escopo com o dono do projeto — não por código** (ver §6). Candidatos naturais: Round 3/inventário clicável + loot de equipamento, ou qualquer item da lista de decisões adiadas (§7).
+A **Fase 1 (Multiplayer LAN & WebSockets)** e a **Fase 2 (Persistência MySQL, Identidade de Personagem e Progressão)** estão **formalmente concluídas e validadas em teste de campo manual** (2026-07-26). A Fase 2 foi executada em 5 pacotes sequenciais especificados em §9 (histórico), todos implementados, testados e documentados (ver §2.3-§2.7), e em seguida passou por dois rounds de correção pós-teste-de-campo (§2.8-§2.10) até fechar por completo (§2.11). O servidor MySQL local (`rpg_game`) está de pé, com schema completo (`jogadores`, `personagens`, `inventario`), personagens de teste populados e usuário dedicado `rpg_app` operante. O servidor grava no banco em tempo real: snapshot periódico (~10s), save no disconnect, XP/nível e inventário/equipamento (eventos críticos, gravação imediata). Após o fechamento da Fase 2, o **Round 3 (Inventário Clicável, pós-Fase 2)** também foi concluído e validado em teste de campo (2026-07-26) — ver §2.12: a barra de itens fixa deu lugar a uma tela de inventário que abre/fecha (`Tab` ou clique), com o jogador totalmente fora de combate enquanto ela está aberta (autoridade no servidor), abas de navegação e itens de equipamento realmente clicáveis com destaque visual de equipado.
+**Foco Atual (Estado de parada):** Fase 2 **completa e fechada de ponta a ponta** — fluxo real (seleção de personagem → combate → morte → respawn com imunidade → progressão persistente) validado pelo dono do projeto sem depender de DevTools — e Round 3 **completo e fechado** sobre essa base (inventário clicável, §2.12). **Próxima sessão começa por alinhamento de escopo com o dono do projeto — não por código** (ver §6). Candidatos naturais: loot de equipamento no mapa, a Fase 3 formal, ou qualquer item da lista de decisões adiadas (§7).
 
 **Origem:** Documento mestre de especificação técnica e roadmap operacional para desenvolvimento solo do *Project Post-Apoc RPG / Horizon Co-op*. Este arquivo serve como contexto técnico e guia de execução contínua para qualquer agente de IA ou sessão de desenvolvimento.
 
@@ -15,7 +15,7 @@ A **Fase 1 (Multiplayer LAN & WebSockets)** e a **Fase 2 (Persistência MySQL, I
 1. **Desacoplamento Absoluto (Phaser vs. Regra de Negócio):**
 O Phaser 4.1.0 atua puramente na camada de apresentação (Canvas/WebGL, rendering de sprites, animações, inputs e câmeras). Nenhuma regra de inventário, atributos de classe, cálculo de dano ou persistência reside dentro de Sprites ou Containers.
 2. **Autoridade do Servidor e Sincronização LAN:**
-A autoridade sobre a posição de inimigos, HP dos alvos, tabela de loot e estado da partida pertence ao servidor Node.js. O cliente envia intenções de comando (`player_move`, `attack_enemy`, `pickup_item`) e realiza interpolação visual (*lerp*) para suavizar a renderização dos outros jogadores.
+A autoridade sobre a posição de inimigos, HP dos alvos e estado da partida pertence ao servidor Node.js. O cliente envia intenções de comando (`player_move`, `attack_enemy`, `equip_item`/`unequip_item`) e realiza interpolação visual (*lerp*) para suavizar a renderização dos outros jogadores.
 3. **Persistência Relacional com MySQL:**
 O MySQL é a fonte da verdade para dados persistentes (contas, personagens, atributos base, inventário e histórico). Transições entre cenas persistem no `registry` em memória temporária do Phaser e salvam assincronamente no MySQL.
 4. **Arquitetura Baseada em Eventos (EventBus):**
@@ -30,7 +30,7 @@ Decisões deliberadas e fechadas durante a Fase 2 (Pacotes 1-4), registradas aqu
 * **Modelo de recálculo de atributos.** `hp_max`/`dano_base`/`defesa_base` nunca são persistidos na tabela `personagens`. São sempre derivados em memória no `join`, na subida de nível e ao equipar/desequipar item, pela fórmula `base_da_classe(nivel) + soma_dos_itens_equipados` (`calcularAtributosEfetivos` + `recalcularAtributosEfetivos` em `server/server.js`). Garante fonte única de verdade e rebalanceamento retroativo.
 * **Molde de classe hardcoded.** Atributos-base por classe (`CLASSES`) e catálogo de itens (`ITENS`) vivem como constantes no código do servidor, não em tabelas. Uma tabela `classes`/`itens` no banco é evolução futura, fora do escopo.
 * **Persistência assíncrona e escalonada.** Eventos críticos (subida de nível, coleta de item, equipar/desequipar) gravam imediatamente. Posição e HP gravam por snapshot periódico (~10s, `server/server.js`) e obrigatoriamente no `disconnect`.
-* **Itens formalmente adiados (não implementar sem nova autorização):** login/autenticação, tabela `classes`, tabela `itens_instanciados_mapa` (moedas do mapa continuam efêmeras em memória com respawn), Redis/cache, anti-cheat de validação de posição.
+* **Itens formalmente adiados (não implementar sem nova autorização):** login/autenticação, tabela `classes`, tabela `itens_instanciados_mapa` (loot de equipamento no mapa nunca foi implementado — coleta de moeda foi removida por completo no Round 2, ver §1.3), Redis/cache, anti-cheat de validação de posição.
 
 ### 1.2 Decisões da Correção do Teste de Campo (pós-Fase 2, Round 1)
 
@@ -44,9 +44,9 @@ Decisões deliberadas e fechadas durante a Fase 2 (Pacotes 1-4), registradas aqu
 * **Invulnerabilidade de respawn é evento, não estado do banco.** A concessão de imunidade pós-morte passou a depender de um sinal transitório em memória (`respawnPendente`, `Set` server-side por `personagem_id`), populado no instante da morte e consumido uma única vez no próximo `join`. Curar HP continua ligado a `hp_atual <= 0` no banco (cobre corrupção residual de sessões antigas), mas conceder invulnerabilidade não depende mais desse valor — evita invencibilidade permanente para personagens com HP negativo persistido de testes anteriores.
 * **Knockback e respawn usam flags de imunidade separadas.** `this.player.invulnerable` (knockback) trava movimento e o collider de ataque de propósito; reaproveitá-la para o respawn travava o jogador em cima do inimigo por 3s. `this.player.respawnShield` é a flag dedicada do respawn — imune a dano, mas livre para se mover e revidar, espelhando o comportamento autoritário do servidor ("pode revidar, só não pode ser ferido").
 * **Moeda/pontuação removidas do jogo — eram ilusórias, não uma feature madura sendo descartada.** `player.score` no servidor nunca era lido em lugar nenhum (campo morto desde sempre); o contador "DADOS COLETADOS" do client era puramente local e zerava no F5, nunca sincronizava com o servidor. Manter um placar que engana é pior que não ter placar. `pickup_item`, `spawnMoedas`, `itemsGroup`/`itemData` e o `INSERT INTO inventario ... tipo='Recurso'` associado foram removidos por inteiro (servidor e client) — não só o placar, o mecanismo inteiro. **"Coletar moeda pra pontuar" está fora do design do jogo.** O que entra no futuro é coletar **itens importantes** (loot com peso — armas, materiais), que nasce junto do inventário clicável, não como um placar de pontos.
-* **Renderização da barra de itens filtra `tipo='Recurso'` (defesa em profundidade).** Mesmo com o mecanismo de coleta de moeda removido por completo, `UIScene.renderInventory` pula qualquer linha `tipo='Recurso'` antes de desenhar — protege contra dado residual (linhas antigas já persistidas, ou qualquer coleta futura que grave `Recurso` por engano). `tipo='Equipamento'` sempre é desenhado normalmente.
-* **Inventário clicável nunca existiu de verdade — não é regressão, é lacuna original.** O Pacote 4 validou o backend por script (`test_pacote4.js`); o client sempre teve só a fila de slots (§2.2), sem abrir/clicar/agir de verdade. Fica registrado como trabalho futuro próprio (Round 3 / fase de itens dedicada), não como algo quebrado pelo Round 2.
-* **Coleta de equipamento no mapa nunca existiu.** Os dois equipamentos de teste (`espada_enferrujada`, `escudo_improvisado`) foram inseridos manualmente via SQL (`test_pacote4.js`, mesmo padrão do Pacote 1), nunca coletados em jogo. Não faz parte do que foi removido junto da moeda — é feature nova a construir do zero, junto do inventário clicável.
+* **Renderização de itens filtra por inclusão (`tipo='Equipamento'`), não só por exclusão de `'Recurso'` (atualizado no Round 3, ver §2.12).** A defesa em profundidade original (Round 2) pulava explicitamente `tipo='Recurso'`; o Round 3 reforçou isso trocando para inclusão explícita — `UIScene.renderInventory` só desenha o que é `tipo='Equipamento'`, então `'Recurso'` e qualquer tipo futuro não-equipável ficam de fora por construção, não por uma exclusão pontual.
+* **Inventário clicável nunca existiu de verdade até o Round 2 — lacuna original, fechada no Round 3.** O Pacote 4 validou o backend por script (`test_pacote4.js`); o client, até o Round 2, tinha só a fila de slots (§2.2), sem abrir/clicar/agir de verdade. Essa lacuna foi registrada como trabalho futuro ao final do Round 2 e fechada no Round 3 (pós-Fase 2, ver §2.12) — não era, e nunca foi, uma regressão do Round 2.
+* **Coleta de equipamento no mapa nunca existiu — continua fora de escopo.** Os dois equipamentos de teste (`espada_enferrujada`, `escudo_improvisado`) foram inseridos manualmente via SQL (`test_pacote4.js`, mesmo padrão do Pacote 1), nunca coletados em jogo. Não faz parte do que foi removido junto da moeda. O Round 3 (§2.12) construiu o inventário clicável sobre esses mesmos itens de teste, mas não endereçou a coleta em si — loot de equipamento no mapa continua feature nova a construir do zero, agora desacoplada do inventário clicável (que já está pronto).
 
 ---
 
@@ -113,14 +113,15 @@ CREATE TABLE IF NOT EXISTS itens_instanciados_mapa (
                                    │
                                    ▼
 ┌────────────────────────────────────────────────────────────────────────┐
-│ FASE 1: Sincronização Multiplayer LAN & WebSockets (EM ANDAMENTO)       │
+│ FASE 1: Sincronização Multiplayer LAN & WebSockets (CONCLUÍDA)          │
 │ Node.js Server, Handshake, Broadcast de Movimento, Combat Sync         │
 └──────────────────────────────────┬─────────────────────────────────────┘
                                    │
                                    ▼
 ┌────────────────────────────────────────────────────────────────────────┐
-│ FASE 2: Sistema de Inventário, Equipamentos & Persistência MySQL       │
-│ Drag & Drop UI, Atributos Dinâmicos, CRUD de Itens, Consumíveis        │
+│ FASE 2: Persistência MySQL, Identidade & Progressão (CONCLUÍDA)         │
+│ Seleção de Personagem, XP/Nível, Inventário server-side c/ Atributos   │
+│ Dinâmicos ao Equipar (UI clicável concluída pós-Fase 2 no Round 3)     │
 └──────────────────────────────────┬─────────────────────────────────────┘
                                    │
                                    ▼
@@ -142,7 +143,7 @@ CREATE TABLE IF NOT EXISTS itens_instanciados_mapa (
 ### FASE 0: Fundação de Cenas, FSM e Combate Local (Status: ✅ Concluída)
 
 * [x] **FSM de Cenas Completa:** Transições entre `Boot`, `Preload`, `MainMenu`, `Loading`, `HubCentral` e `ExploracaoCombate`.
-* [x] **Gestão do Mundo:** Configuração do mapa $2000 \times 2000$ px com limites físicos (`setBounds`) e câmera com rastreamento suave (*lerp* 0.08).
+* [x] **Gestão do Mundo:** Configuração do mapa $2000 \times 2000$ px com limites físicos (`setBounds`) e câmera com `startFollow` direto (sem lerp fracionário — corrigido no Round 2 por causar tremida vertical, ver §2.9), `roundPixels` mantido.
 * [x] **Combate Local Determinístico:** Mitigação de dano ($\text{Dano Efetivo} = \max(1, \text{Dano} - \text{Defesa})$), barras de HP dinâmicas sobre os inimigos e cálculo de morte.
 * [x] **Spawn Seguro de Loot:** Validação de células transitáveis no Tilemap para queda de itens em áreas válidas.
 
@@ -176,10 +177,7 @@ CREATE TABLE IF NOT EXISTS itens_instanciados_mapa (
 * Server → Clients (`enemy_died`): `{ enemyId, killerId }`
 * Server → Clients (`player_died`): `{ playerId }`
 
-* **Coleta de Loot:**
-* Client → Server (`pickup_item`): `{ itemId }`
-* Server → Clients (`item_despawned`): `{ itemId, playerId }`
-* Server → Clients (`items_respawned`): `{ items }`
+* **Coleta de Loot:** removida por inteiro no Round 2 (ver §1.3) — `pickup_item`, `item_despawned` e `items_respawned` não existem mais no código (nem servidor, nem client). Não há mensagem de protocolo para coleta de loot no estado atual; "coletar itens" volta a existir só quando o loot de equipamento no mapa for construído (trabalho futuro, §1.3/§7).
 
 * **Progressão (Pacote 2):**
 * Server → Client (`level_up`): `{ personagem_id, nivel, hp_max, dano_base, defesa_base, hp_atual }`
@@ -188,6 +186,9 @@ CREATE TABLE IF NOT EXISTS itens_instanciados_mapa (
 * Client → Server (`equip_item` / `unequip_item`): `{ inventario_id }`
 * Server → Client (`inventory_update`): `{ personagem_id, itens }`
 * Server → Client (`stats_updated`): `{ personagem_id, hp_max, dano_base, defesa_base, hp_atual }`
+
+* **Tela de Inventário (Round 3, pós-Fase 2 — ver §2.12):**
+* Client → Server (`inventory_open` / `inventory_close`): sem payload — marca/desmarca `player.inventarioAberto` (booleano em memória, sem expiração por tempo). Enquanto `true`, o servidor ignora `player_move` desse jogador e pula o bloco inteiro de dano em `attack_enemy` (nem o jogador nem o inimigo tomam dano no toque). Sem mensagem de confirmação do servidor — é fire-and-forget; a tela do client abre/fecha otimisticamente, mas a autoridade real (estático/fora de combate) não depende disso.
 
 
 
@@ -440,7 +441,7 @@ Também fechados nesta janela: **respawn contínuo de inimigos** (timer próprio
 
 **Item 3, ponta solta final:** dados já persistidos de sessões de teste anteriores (linhas `inventario.tipo='Recurso'`) continuavam aparecendo na barra de itens mesmo após a remoção do mecanismo de coleta. Fechado em duas partes: (a) dono do projeto limpou manualmente via SQL as linhas `tipo='Recurso'` já persistidas; (b) `UIScene.renderInventory` passou a filtrar `tipo='Recurso'` na renderização (defesa em profundidade — ver §1.3), garantindo que a barra nunca desenhe `Recurso` mesmo que uma linha residual reapareça no futuro.
 
-**Descoberta que mudou o escopo:** o inventário do client nunca funcionou de verdade — coleta e enfileira slots, mas nunca foi clicável, nunca abriu tela/ações; o Pacote 4 só validou o backend por script. Não é um bug do Round 2, é uma lacuna que sempre existiu. Adiado como trabalho futuro próprio (Round 3 / fase de itens dedicada — ver §7).
+**Descoberta que mudou o escopo:** o inventário do client nunca funcionou de verdade — coleta e enfileira slots, mas nunca foi clicável, nunca abriu tela/ações; o Pacote 4 só validou o backend por script. Não é um bug do Round 2, é uma lacuna que sempre existiu. Adiado como trabalho futuro próprio (Round 3 / fase de itens dedicada — ver §7). *(Fechado desde então — ver §2.12.)*
 
 #### 2.11 Estado Final Consolidado — FASE 2 COMPLETA (2026-07-26)
 
@@ -468,7 +469,36 @@ Também fechados nesta janela: **respawn contínuo de inimigos** (timer próprio
 * Inimigos podem nascer sobrepostos (4 posições fixas, teto 7) — não incomoda na prática, dado o espaçamento de 10s entre spawns.
 * Trava pontual de movimento ("preso subindo") observada uma vez — provável rede, investigar só se recorrer.
 
-**Ponto de retomada:** ver §6 — a próxima sessão começa por alinhamento de escopo com o dono do projeto, não por código.
+**Ponto de retomada (histórico — válido até a decisão de escopo abaixo ser tomada):** ver §6 — a escolha feita foi o Round 3, registrado em §2.12.
+
+#### 2.12 Round 3 — Inventário Clicável (pós-Fase 2, Status: ✅ Concluído e validado em campo, 2026-07-26)
+
+> **Round 3 não é parte da Fase 2** (já fechada em §2.11) — foi a opção escolhida na retomada de escopo (§6) entre os candidatos então abertos (inventário clicável, Fase 3 formal, itens de §7). Fecha a lacuna registrada em §1.3/§2.10: o backend de inventário sempre esteve pronto e validado (Pacote 4), mas o client nunca tornou isso clicável de verdade.
+
+**Objetivo:** substituir a barra de itens fixa (grid de slots sempre visível, Pacote 4) por uma tela de inventário que abre/fecha, com abas e itens realmente clicáveis — reaproveitando o pipeline server-autoritário já validado (`inventory_action` → `equip_item`/`unequip_item` → `inventory_update`/`stats_updated`), sem reconstruí-lo.
+
+**Passo 1 — Abrir/fechar a tela + congelar e imunizar o jogador:**
+* Tela abre com `Tab` ou clique no ícone/barra (`UIScene`); a mesma ação fecha.
+* Autoridade 100% no servidor: mensagens `inventory_open`/`inventory_close` (sem payload, ver §1.2) setam `player.inventarioAberto` — booleano em memória, sem timer (dura enquanto aberto; diferente de `invulneravelAte`/`respawnShield`, que expiram por tempo).
+* Enquanto aberto, o jogador congela (`player_move` ignorado no servidor: `if (player.inventarioAberto) return;`) e fica **totalmente fora de combate** — não toma nem causa dano no toque. Ajuste feito após o teste de campo revelar que a guarda inicial só pulava o dano ao jogador e deixava o inimigo tomar dano sozinho; corrigida envolvendo o bloco inteiro de `attack_enemy` na condição (`if (enemy && !player.inventarioAberto) { ...todo o combate... }`), não só a subtração de HP do jogador. Só o próprio jogador congela — o mundo (outros jogadores, inimigos) continua rodando.
+* Limpeza da flag garantida em todo caminho de saída: `inventory_close` explícito, morte (não ocorre em combinação com o inventário aberto, já que nenhum dano é aplicado nesse estado) e desconexão — graciosa ou fechamento abrupto de aba, ambas passam por `ws.on('close')` → `liberarPersonagem`, que apaga o objeto `player` inteiro (com a flag) de `gameState.players`. Validado em campo 4x, com reinício de página e de servidor.
+
+**Passo 2 — Abas verticais na tela de inventário:** `UIScene.tabs` é um array data-driven (`{ id, label }`) — "Equipamentos" (real) e "Em breve" (placeholder). Clique num botão de aba chama `selectTab(id)`, que estiliza o botão ativo (verde/borda amarela vs. azul-escuro/borda ciano) e alterna a visibilidade do conteúdo. Aba padrão ao abrir: "Equipamentos". Estrutura pensada para uma 3ª aba ser só uma nova entrada no array, sem tocar em `renderTabButtons`/`selectTab`.
+
+**Bug encontrado e corrigido entre os Passos 2 e 3:** itens apareciam "soltos" (sem moldura/abas visíveis) já na entrada do jogo, e só ficavam corretos depois do primeiro abrir/fechar da tela. Causa raiz: `selectTab`, chamado uma vez em `create()` pra fixar a aba padrão, decidia a visibilidade do conteúdo só pela aba ativa, sem checar se a tela estava de fato aberta — então `slotsContainer` já nascia visível antes de qualquer abertura. Corrigido gateando a visibilidade por `this.isOpen` dentro de `selectTab`, com `setOpen()` passando a delegar nele como única fonte de verdade (eliminando a lógica duplicada que existia antes).
+
+**Passo 3 — Itens clicáveis na aba Equipamentos:**
+* `renderInventory` passou a filtrar por inclusão (`item.tipo === 'Equipamento'`), não só por exclusão de `'Recurso'` — mais forte contra qualquer tipo futuro não-equipável (ver §1.3).
+* Cada item é uma linha clicável que reusa o pipeline existente (`onSlotClick` → `inventory_action` → `equip_item`/`unequip_item`) sem alterações.
+* Destaque de equipado: verde (`0x00ff00`, fundo `0x1a3a1a`) vs. cinza (`0x888888`, fundo `0x2a2a2a`), com texto de status ("EQUIPADO" / "Clique para equipar").
+* Atributos (`statsText`, topo-esquerdo, sempre visível mesmo com a tela fechada) já reagiam a `stats_updated` desde o Pacote 4 — nenhuma mudança nova foi necessária para o HP/dano/defesa exibido mudar ao equipar/desequipar; o número continua vindo 100% do servidor.
+* Cada linha tem um `iconPlaceholder` isolado — pronta pra troca por sprite (Godot) sem mover nome/status de posição.
+
+**Adiado de propósito (registrado como futuro, não como pendência/bug):** visual "bonito"/tela maior com grade de ícones — fica para quando os ícones reais do Godot chegarem, evitando retrabalho de layout duas vezes.
+
+**Limpeza de passagem:** confirmado que `dotenv.config()` já chamava com `quiet: true` (`server/server.js:2`) — suprime os "tips" promocionais do `dotenv` v17 (incluindo uma linha citando `vestauth.com`) que apareceram apenas num teste ad-hoc de verificação nesta sessão, nunca no servidor real.
+
+**Resultado:** validado em teste de campo pelo dono do projeto — tela abre/fecha (Tab e clique), jogador fora de combate nos dois sentidos com o inventário aberto, abas navegam, itens equipam/desequipam com destaque visual de equipado e atributos atualizando em tela.
 
 ---
 
@@ -581,11 +611,11 @@ findSafeDropPosition(originX, originY, tilemapLayer) {
 
 ## 6. Estado Exato para Retomada (Próxima Sessão)
 
-**Ponto de Parada Atual:** **Fase 2 COMPLETA e fechada em teste de campo manual** (2026-07-26) — Pacotes 1-5 (§2.3-§2.7) mais Round 1 e Round 2 de correção pós-teste-de-campo (§2.8-§2.11), todos validados. O servidor lê identidade real do MySQL (personagem + inventário), aplica molde de classe + buff de nível + bônus de itens equipados (recálculo em memória, nunca persistido em `personagens`), grava snapshot periódico/disconnect/XP-nível/inventário, cura e concede invulnerabilidade autoritária no respawn, mantém população contínua de inimigos e elimina jogadores fantasma/duplicados. O client seleciona personagem, conecta e envia `join` sozinho — nenhuma etapa depende de DevTools. O Phaser roda duas cenas em paralelo durante o combate: `ExploracaoCombate` (jogo) e `UIScene` (inventário, apenas renderização, já filtrando `tipo='Recurso'`). Documentação consolidada neste único arquivo — sem mais divergências de nomenclatura de protocolo conhecidas.
+**Ponto de Parada Atual:** **Fase 2 COMPLETA** (Pacotes 1-5, §2.3-§2.7, mais Round 1 e Round 2 de correção pós-teste-de-campo, §2.8-§2.11) **e Round 3 (Inventário Clicável, pós-Fase 2) também COMPLETO** (§2.12) — ambos fechados e validados em teste de campo manual (2026-07-26). O servidor lê identidade real do MySQL (personagem + inventário), aplica molde de classe + buff de nível + bônus de itens equipados (recálculo em memória, nunca persistido em `personagens`), grava snapshot periódico/disconnect/XP-nível/inventário, cura e concede invulnerabilidade autoritária no respawn, mantém população contínua de inimigos e elimina jogadores fantasma/duplicados. O client seleciona personagem, conecta e envia `join` sozinho — nenhuma etapa depende de DevTools. O Phaser roda duas cenas em paralelo durante o combate: `ExploracaoCombate` (jogo) e `UIScene` — esta última não é mais uma barra fixa sempre visível: é uma **tela de inventário que abre/fecha** (`Tab` ou clique, `inventory_open`/`inventory_close`), com o jogador estático e totalmente fora de combate enquanto aberta (autoridade no servidor via `player.inventarioAberto`), abas verticais ("Equipamentos" real + "Em breve" placeholder) e itens de `tipo='Equipamento'` clicáveis com destaque visual verde/cinza de equipado. Documentação consolidada neste único arquivo — sem mais divergências de nomenclatura de protocolo conhecidas.
 
 1. **Banco já de pé:** schema completo aplicado (`jogadores`, `personagens`, `inventario` — `server/schema.sql`) e personagens de teste populados (`server/seed_teste.sql`). Usuário dedicado `rpg_app` configurado; credenciais em `server/.env` (git-ignorado, não commitar). Dados de teste dos personagens já não são mais os valores originais do seed (refletem os testes reais executados ao longo de toda a Fase 2); as linhas `tipo='Recurso'` (moeda legada) já foram limpas manualmente pelo dono do projeto.
-2. **Próxima ação — ALINHAMENTO DE ESCOPO ANTES DE QUALQUER CÓDIGO.** A Fase 2 está encerrada; nada de implementação nesta retomada até o próximo alvo estar decidido e confirmado com o dono do projeto. Candidatos naturais: **Round 3 / inventário clicável + loot de equipamento no mapa** (§7, feature nova — nunca existiu), a **Fase 3 formal** (Level Design Avançado, Tilemaps & Spatial Partitioning, §3), ou qualquer item da lista de decisões adiadas (§7).
-3. **Pendências que sobrevivem à Fase 2, sem bloquear nada** (detalhe completo em §7): feedback de `equip_item`/`unequip_item` recusado ainda é silencioso; seleção de personagem pode mostrar dado defasado (mitigado com F5); cura de respawn só persiste no banco por snapshot/saída, não no instante do `join`.
+2. **Próxima ação — ALINHAMENTO DE ESCOPO ANTES DE QUALQUER CÓDIGO.** Fase 2 e Round 3 estão encerrados; nada de implementação nesta retomada até o próximo alvo estar decidido e confirmado com o dono do projeto. Candidatos naturais: **loot de equipamento no mapa** (§7.3, feature nova — nunca existiu, agora desacoplada do inventário clicável, que já está pronto), a **Fase 3 formal** (Level Design Avançado, Tilemaps & Spatial Partitioning, §3), ou qualquer item da lista de decisões adiadas (§7).
+3. **Pendências que sobrevivem à Fase 2 e ao Round 3, sem bloquear nada** (detalhe completo em §7): feedback de `equip_item`/`unequip_item` recusado ainda é silencioso; seleção de personagem pode mostrar dado defasado (mitigado com F5); cura de respawn só persiste no banco por snapshot/saída, não no instante do `join`.
 
 ---
 
@@ -604,8 +634,8 @@ findSafeDropPosition(originX, originY, tilemapLayer) {
 
 ### 7.3 Escopo futuro registrado (não implementado — decisões conscientemente adiadas)
 
-* **Inventário clicável (UI real de itens).** Nunca existiu de verdade no client — Round 3 / fase de itens dedicada. Loot com peso (armas, materiais) nasce junto disso.
-* **Coleta de loot de equipamento no mapa.** Não existe nenhum caminho de código pra isso hoje; equipamento de teste sempre foi inserido manualmente via SQL. Feature nova a construir do zero, junto do inventário clicável.
+* **Visual "bonito"/grade de ícones na tela de inventário.** Adiado de propósito no Round 3 (§2.12) — fica para quando os ícones reais do Godot chegarem, pra não retrabalhar o layout duas vezes. (Inventário clicável em si — abrir/fechar, abas, equipar/desequipar com destaque visual — já foi concluído no Round 3.)
+* **Coleta de loot de equipamento no mapa.** Não existe nenhum caminho de código pra isso hoje; equipamento de teste sempre foi inserido manualmente via SQL. Feature nova a construir do zero — agora desacoplada do inventário clicável, que já está pronto (§2.12).
 * **Login/contas.** Destrava: seleção de personagem filtrada por dono (em vez de pool compartilhado, §1.2), posse real de personagem, e fecha a janela de "roubo" de personagem pós-morte.
 * **Combate com ação intencional (ataque/defesa).** Hoje é só colisão física ferindo os dois lados; não há gatilho deliberado de ataque/bloqueio.
 * **Migração para Modelo A de conexão** (`NetworkManager`, socket único entre cenas) — preparação mínima já feita (`networkConfig.js`, §1.2); migração em si é pacote próprio futuro.

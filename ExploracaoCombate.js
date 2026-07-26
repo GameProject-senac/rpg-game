@@ -72,6 +72,16 @@ export class ExploracaoCombate extends Phaser.Scene {
         this.cursors = this.input.keyboard.createCursorKeys();
         this.input.keyboard.once('keydown-ESC', () => this.scene.start('Loading', { destino: 'HubCentral' }));
 
+        // Tela de inventário (Passo 1, Round 3): abre/fecha com TAB ou clique no ícone da UIScene
+        // (evento 'inventory_toggle'). Enquanto aberta, o jogador fica estático — a imunidade real
+        // é autoritária no servidor (inventory_open/close + guarda em attack_enemy/player_move);
+        // aqui só espelhamos o estado pra travar o input local e evitar tráfego de movimento inútil.
+        this.inventoryOpen = false;
+        this.input.keyboard.addCapture(Phaser.Input.Keyboard.KeyCodes.TAB); // senão o browser tira o foco do canvas
+        this.onInventoryToggle = () => this.toggleInventoryScreen();
+        this.input.keyboard.on('keydown-TAB', this.onInventoryToggle);
+        this.game.events.on('inventory_toggle', this.onInventoryToggle);
+
         this.initMultiplayer();
 
         // UIScene (inventário) roda em paralelo — só desenha o que o servidor manda via EventBus.
@@ -83,6 +93,8 @@ export class ExploracaoCombate extends Phaser.Scene {
 
         this.events.once('shutdown', () => {
             this.input.keyboard.removeAllListeners('keydown-ESC');
+            this.input.keyboard.off('keydown-TAB', this.onInventoryToggle);
+            this.game.events.off('inventory_toggle', this.onInventoryToggle);
             this.game.events.off('inventory_action', this.onInventoryAction);
             this.scene.stop('UIScene');
             this.playerHpGraphics.destroy();
@@ -243,6 +255,16 @@ export class ExploracaoCombate extends Phaser.Scene {
         this.levelUpTimer = this.time.delayedCall(3000, () => this.levelUpText.setText(''));
     }
 
+    // TELA DE INVENTÁRIO (Passo 1, Round 3): alterna estado local, avisa o servidor (autoridade
+    // real de imunidade/estático) e avisa a UIScene pra abrir/fechar a moldura visual.
+    toggleInventoryScreen() {
+        this.inventoryOpen = !this.inventoryOpen;
+        if (this.socket && this.socket.readyState === WebSocket.OPEN) {
+            sendMessage(this.socket, { type: this.inventoryOpen ? 'inventory_open' : 'inventory_close' });
+        }
+        this.game.events.emit('inventory_screen_state', { open: this.inventoryOpen });
+    }
+
     // INVENTÁRIO / ATRIBUTOS (autoridade 100% do servidor — client só espelha e repassa pro EventBus)
     handleInventoryUpdate(data) {
         if (data.personagem_id !== this.myId) return;
@@ -322,8 +344,10 @@ export class ExploracaoCombate extends Phaser.Scene {
     update(time, delta) {
         if (!this.playerStats) return; // Espera o handshake do server
 
-        // 1. Movimentação Local Predita (SÓ PERMITE SE NÃO ESTIVER EM KNOCKBACK)
-        if (!this.player.invulnerable) {
+        // 1. Movimentação Local Predita (SÓ PERMITE SE NÃO ESTIVER EM KNOCKBACK NEM COM O INVENTÁRIO ABERTO)
+        if (this.inventoryOpen) {
+            this.player.body.setVelocity(0); // estático — zera até velocidade residual de knockback
+        } else if (!this.player.invulnerable) {
             this.player.body.setVelocity(0);
             if (this.cursors.left.isDown) this.player.body.setVelocityX(-300);
             else if (this.cursors.right.isDown) this.player.body.setVelocityX(300);
