@@ -60,6 +60,6 @@ export class UIScene extends Phaser.Scene {
     }
 
     renderStats(stats) {
-        this.statsText.setText(`HP: ${stats.hp_atual}/${stats.hp_max}  DANO: ${stats.dano_base}  DEF: ${stats.defesa_base}`);
+        this.statsText.setText(`NÍVEL: ${stats.nivel}  HP: ${stats.hp_atual}/${stats.hp_max}  DANO: ${stats.dano_base}  DEF: ${stats.defesa_base}`);
     }
 }

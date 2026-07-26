@@ -78,12 +78,19 @@ console.log('🚀 Servidor WebSocket AUTORITÁRIO iniciado (Tick Rate: 20Hz)');
 // O estado supremo do jogo agora reside aqui
 const gameState = {
     players: {},
-    enemies: {},
-    items: {}
+    enemies: {}
 };
 
 // Trava de sessão em memória: personagem_id ativos no momento (efêmera, não persiste).
 const activeSessions = new Set();
+
+// Sinal transitório de respawn (mesmo padrão de `activeSessions`, chave = personagem_id):
+// populado no INSTANTE da morte, consumido (removido) no PRÓXIMO join daquele personagem.
+// Corrige o bug de invulnerabilidade permanente — antes, `reviveu` era recalculado do
+// `hp_atual` do banco a cada join, e como a cura só existe em memória (grava no banco só via
+// snapshot/liberarPersonagem), a condição nunca deixava de ser verdadeira e a invulnerabilidade
+// era reconcedida indefinidamente. Agora é ligada ao EVENTO de morte, não ao estado persistido.
+const respawnPendente = new Set();
 
 // Remove um personagem da autoridade do servidor de forma SÍNCRONA (gameState.players e
 // activeSessions liberados antes de qualquer await) — usada tanto no close do socket quanto
@@ -100,30 +107,32 @@ function liberarPersonagem(player) {
 }
 
 let nextEnemyId = 1;
-let nextItemId = 1;
+
+// Pontos fixos de spawn de inimigo — reusados tanto na população inicial quanto no respawn
+// contínuo (Causa C, Round 2, §8.12).
+const ENEMY_SPAWN_POINTS = [
+    { x: 200, y: 200, vx: 150, vy: 200 },
+    { x: 1800, y: 1800, vx: -200, vy: -150 },
+    { x: 200, y: 1800, vx: 200, vy: -150 },
+    { x: 1800, y: 200, vx: -150, vy: 200 }
+];
+const ENEMY_HP = 50, ENEMY_DANO = 15, ENEMY_DEFESA = 2;
+const ENEMY_POPULATION_CAP = 7;
+let nextEnemySpawnPoint = 0;
 
 // 1. Gerador de Inimigos (Server-side)
 function spawnEnemy(x, y, vx, vy, hp, dano, defesa) {
     const id = `enemy_${nextEnemyId++}`;
     gameState.enemies[id] = { id, x, y, vx, vy, hp_atual: hp, hp_max: hp, dano_base: dano, defesa_base: defesa };
+    return gameState.enemies[id];
 }
-spawnEnemy(200, 200, 150, 200, 50, 15, 2);
-spawnEnemy(1800, 1800, -200, -150, 50, 15, 2);
-spawnEnemy(200, 1800, 200, -150, 50, 15, 2);
 
-// 2. Gerador de Moedas (Server-side)
-function spawnMoedas() {
-    const safePositions = [
-        { x: 150, y: 150 }, { x: 1000, y: 150 }, { x: 1850, y: 150 },
-        { x: 150, y: 1000 }, { x: 1850, y: 1000 },
-        { x: 150, y: 1850 }, { x: 1000, y: 1850 }, { x: 1850, y: 1850 }
-    ];
-    safePositions.forEach(pos => {
-        const id = `item_${nextItemId++}`;
-        gameState.items[id] = { id, x: pos.x, y: pos.y, tipo: 'moeda' };
-    });
+// População inicial: os mesmos 3 primeiros pontos fixos de sempre.
+for (let i = 0; i < 3; i++) {
+    const p = ENEMY_SPAWN_POINTS[i % ENEMY_SPAWN_POINTS.length];
+    spawnEnemy(p.x, p.y, p.vx, p.vy, ENEMY_HP, ENEMY_DANO, ENEMY_DEFESA);
 }
-spawnMoedas();
+nextEnemySpawnPoint = 3 % ENEMY_SPAWN_POINTS.length; // respawn contínuo cicla a partir daqui
 
 wss.on('connection', (ws) => {
     console.log('[+] Conexão WebSocket estabelecida (aguardando join)');
@@ -151,14 +160,14 @@ wss.on('connection', (ws) => {
                     nome: row.nome,
                     classe: row.classe,
                     nivel: row.nivel,
-                    em_uso: activeSessions.has(row.id)
+                    em_uso: activeSessions.has(String(row.id))
                 }));
                 ws.send(JSON.stringify({ type: 'character_list', personagens }));
                 return;
             }
 
             if (data.type === 'join') {
-                const requestedId = data.personagem_id;
+                const requestedId = String(data.personagem_id);
 
                 if (activeSessions.has(requestedId)) {
                     console.log(`[join] Recusado — personagem_id ${requestedId} já está em sessão ativa.`);
@@ -211,20 +220,41 @@ wss.on('connection', (ws) => {
                     vx: 0, vy: 0,
                     hp_atual: row.hp_atual,
                     hp_max: 0, dano_base: 0, defesa_base: 0, // recalculado logo abaixo
-                    inventario: invRows,
-                    score: 0
+                    inventario: invRows
                 };
-                recalcularAtributosEfetivos(gameState.players[personagemId]);
+                const player = gameState.players[personagemId];
+                recalcularAtributosEfetivos(player);
 
-                console.log(`[+] Personagem ${personagemId} (${row.nome}, ${row.classe}, nível ${row.nivel}) entrou.`);
+                // Faxina (Round 1): hp_atual <= 0 no banco significa que o personagem morreu em
+                // algum momento e a cura em memória daquela sessão nunca chegou a ser persistida
+                // (só grava via snapshot/liberarPersonagem). Cura sempre que precisar, recalculado
+                // do banco a cada join — idempotente, sem custo, cobre inclusive dados antigos de
+                // antes deste servidor ter subido.
+                const precisaCurar = row.hp_atual <= 0;
+                if (precisaCurar) {
+                    player.hp_atual = player.hp_max;
+                }
+
+                // Invulnerabilidade de respawn (corrigido — bug do teste de campo): NÃO depende
+                // mais do hp_atual do banco (isso reconcedia a janela em todo join, indefinidamente,
+                // porque a cura acima nunca deixava de ser necessária). Depende só do evento real de
+                // morte desta sessão do servidor — `respawnPendente` foi populado no instante exato
+                // da morte (attack_enemy) e é consumido (removido) aqui, uma única vez.
+                const concederInvulnerabilidade = respawnPendente.delete(requestedId);
+                if (concederInvulnerabilidade) {
+                    player.invulneravelAte = Date.now() + 3000;
+                }
+
+                console.log(`[+] Personagem ${personagemId} (${row.nome}, ${row.classe}, nível ${row.nivel}) entrou.${precisaCurar ? ' (hp_atual curado)' : ''}${concederInvulnerabilidade ? ' (invulnerabilidade de respawn concedida)' : ''}`);
 
                 ws.send(JSON.stringify({
                     type: 'welcome',
                     id: personagemId,
+                    reviveu: concederInvulnerabilidade,
                     state: gameState
                 }));
 
-                broadcast({ type: 'player_joined', player: gameState.players[personagemId] }, ws);
+                broadcast({ type: 'player_joined', player }, ws);
                 return;
             }
 
@@ -237,34 +267,6 @@ wss.on('connection', (ws) => {
             if (data.type === 'player_move') {
                 player.x = data.x; player.y = data.y; 
                 player.vx = data.vx; player.vy = data.vy;
-            }
-            // AÇÃO: Pegou item
-            else if (data.type === 'pickup_item') {
-                if (gameState.items[data.itemId]) {
-                    delete gameState.items[data.itemId]; // Remove do server
-                    player.score += 10;
-
-                    // Grava no inventário real (evento crítico — grava na hora, fase2_spec.md §1)
-                    try {
-                        const [result] = await pool.query(
-                            'INSERT INTO inventario (personagem_id, item_id, quantidade, tipo) VALUES (?, ?, 1, ?)',
-                            [personagemId, 'moeda', 'Recurso']
-                        );
-                        player.inventario.push({ id: result.insertId, personagem_id: personagemId, item_id: 'moeda', quantidade: 1, tipo: 'Recurso', equipado: 0 });
-                        ws.send(JSON.stringify({ type: 'inventory_update', personagem_id: personagemId, itens: player.inventario }));
-                    } catch (dbErr) {
-                        console.error(`[pickup_item] Erro ao gravar item no inventário de ${personagemId}:`, dbErr);
-                    }
-
-                    // Avisa todo mundo que sumiu e quem pegou
-                    broadcast({ type: 'item_despawned', itemId: data.itemId, playerId: personagemId });
-
-                    // Se as moedas acabaram, invoca mais!
-                    if (Object.keys(gameState.items).length === 0) {
-                        spawnMoedas();
-                        broadcast({ type: 'items_respawned', items: gameState.items });
-                    }
-                }
             }
             // AÇÃO: Equipar/desequipar item do inventário
             else if (data.type === 'equip_item' || data.type === 'unequip_item') {
@@ -298,12 +300,19 @@ wss.on('connection', (ws) => {
             else if (data.type === 'attack_enemy') {
                 const enemy = gameState.enemies[data.enemyId];
                 if (enemy) {
+                    // Invulnerabilidade de respawn (Round 1): autoritária aqui, não no client —
+                    // concedida no join (ver comentário em `reviveu`) e checada por tempo, sem
+                    // precisar de timer/cleanup — expira sozinha quando Date.now() ultrapassa.
+                    const invulneravel = !!player.invulneravelAte && Date.now() < player.invulneravelAte;
+
                     // Servidor calcula o dano deterministicamente
                     const danoNoEnemy = Math.max(1, player.dano_base - enemy.defesa_base);
-                    const danoNoPlayer = Math.max(1, enemy.dano_base - player.defesa_base);
-                    
+
                     enemy.hp_atual -= danoNoEnemy;
-                    player.hp_atual -= danoNoPlayer;
+                    if (!invulneravel) {
+                        const danoNoPlayer = Math.max(1, enemy.dano_base - player.defesa_base);
+                        player.hp_atual -= danoNoPlayer;
+                    }
 
                     // Avisa todos do novo HP
                     broadcast({
@@ -317,13 +326,16 @@ wss.on('connection', (ws) => {
                     // Verifica morte do Inimigo
                     if (enemy.hp_atual <= 0) {
                         delete gameState.enemies[enemy.id];
-                        player.score += 50;
                         broadcast({ type: 'enemy_died', enemyId: enemy.id, killerId: player.id });
                         concederXP(player, XP_POR_INIMIGO).catch(err => console.error('[XP] Erro ao processar XP/nível:', err));
                     }
                     // Verifica morte do Jogador
                     if (player.hp_atual <= 0) {
                         broadcast({ type: 'player_died', playerId: player.id });
+                        // Marca o sinal transitório de respawn AQUI, no instante exato da morte —
+                        // é isso que o próximo join vai consumir pra conceder invulnerabilidade
+                        // (ver comentário em `respawnPendente`). Não depende do hp_atual do banco.
+                        respawnPendente.add(player.id);
                         // Libera a sessão AGORA, não no close do socket antigo — elimina a corrida
                         // com o join automático do reconecte. Ordem importa: liberarPersonagem(player)
                         // precisa rodar antes de zerar personagemId, senão perdemos a referência.
@@ -432,6 +444,25 @@ setInterval(() => {
         ).catch(err => console.error(`[snapshot] Erro ao gravar personagem ${p.id}:`, err));
     }
 }, SNAPSHOT_INTERVAL);
+
+// ────────────────────────────────────────────────────────
+// RESPAWN CONTÍNUO DE INIMIGOS (Causa C, Round 2 — §8.12): timer próprio, mesmo padrão do
+// snapshot acima (não acopla ao tick de 20Hz, que é outro concern). Enquanto houver menos de
+// ENEMY_POPULATION_CAP vivos, adiciona 1 a cada intervalo, ciclando pelos pontos fixos de spawn.
+// ────────────────────────────────────────────────────────
+const ENEMY_RESPAWN_INTERVAL = 10000;
+setInterval(() => {
+    if (Object.keys(gameState.enemies).length >= ENEMY_POPULATION_CAP) return;
+
+    const p = ENEMY_SPAWN_POINTS[nextEnemySpawnPoint % ENEMY_SPAWN_POINTS.length];
+    nextEnemySpawnPoint++;
+
+    const enemy = spawnEnemy(p.x, p.y, p.vx, p.vy, ENEMY_HP, ENEMY_DANO, ENEMY_DEFESA);
+
+    // state_update só atualiza posição de inimigos que o client já conhece, então um inimigo
+    // novo precisa de aviso próprio.
+    broadcast({ type: 'enemy_spawned', enemy });
+}, ENEMY_RESPAWN_INTERVAL);
 
 function broadcast(data, excludeWs = null) {
     const payload = JSON.stringify(data);

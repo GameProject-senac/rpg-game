@@ -12,7 +12,6 @@ export class ExploracaoCombate extends Phaser.Scene {
     }
 
     create() {
-        this.score = 0;
         // Causa A (teste de campo Fase 2): playerStats/myId NÃO eram resetados aqui, então
         // sobreviviam zumbis a um scene.restart() — o guard `if (!this.playerStats) return`
         // do update() parava de proteger porque o objeto antigo continuava truthy.
@@ -22,15 +21,25 @@ export class ExploracaoCombate extends Phaser.Scene {
         this.cameras.main.setBounds(0, 0, 2000, 2000);
 
         this.add.text(10, 10, 'SISTEMA ONLINE - ESC para voltar', { color: '#00ff00' }).setScrollFactor(0);
-        this.scoreText = this.add.text(10, 30, 'DADOS COLETADOS: 0', { color: '#ffff00', fontSize: '20px' }).setScrollFactor(0);
+        // S4 (Round 2): indicador transitório de subida de nível — texto simples, some sozinho.
+        this.levelUpText = this.add.text(10, 30, '', { color: '#00ffff', fontSize: '18px' }).setScrollFactor(0);
 
         this.player = this.add.rectangle(1000, 1000, 40, 40, 0x00ffff);
         this.physics.add.existing(this.player);
         this.player.body.setCollideWorldBounds(true);
         this.player.invulnerable = false;
-        
+        // Imunidade de respawn (Round 2, correção do congelamento de movimento): flag própria,
+        // separada de `invulnerable` (knockback). NÃO gateia movimento nem o collider de ataque —
+        // só a proteção contra dano é autoritária no servidor. Gancho reservado para feedback
+        // visual futuro (blink/tint); nenhum efeito implementado ainda.
+        this.player.respawnShield = false;
+
         this.playerHpGraphics = this.add.graphics();
-        this.cameras.main.startFollow(this.player, true, 0.08, 0.08);
+        // S5 (Round 2): lerp fracionário + roundPixels produzia tremida vertical (câmera
+        // perseguindo por uma faixa grande, arredondando scroll fracionário a cada frame).
+        // Segue direto (lerp=1, default) e mantém roundPixels — nitidez pronta para quando a
+        // arte real (Godot) chegar; suavização fica pra decidir com o sprite real em mãos.
+        this.cameras.main.startFollow(this.player, true);
 
         // Throttle de envio de player_move: 60Hz de update() -> no máximo 20Hz de rede (fase2_spec.md Pacote 3).
         this.moveSendAccumulator = 0;
@@ -42,21 +51,10 @@ export class ExploracaoCombate extends Phaser.Scene {
         // ─────────────────────────────────────────────────────────────────
         this.otherPlayers = new Map();
         this.enemyData = new Map();
-        this.itemData = new Map();
-        
-        this.enemiesGroup = this.physics.add.group();
-        this.itemsGroup = this.physics.add.group();
-        
-        // Colisões de Interação (Eventos enviados para o Servidor)
-        this.physics.add.overlap(this.player, this.itemsGroup, (p, itemSprite) => {
-            if (this.socket && this.socket.readyState === WebSocket.OPEN) {
-                sendMessage(this.socket, { type: 'pickup_item', itemId: itemSprite.serverId });
-                // Oculta localmente (Client-side Prediction)
-                itemSprite.setVisible(false);
-                itemSprite.body.enable = false;
-            }
-        });
 
+        this.enemiesGroup = this.physics.add.group();
+
+        // Colisões de Interação (Eventos enviados para o Servidor)
         this.physics.add.collider(this.player, this.enemiesGroup, (p, enemySprite) => {
             if (!this.player.invulnerable && this.socket && this.socket.readyState === WebSocket.OPEN) {
                 sendMessage(this.socket, { type: 'attack_enemy', enemyId: enemySprite.serverId });
@@ -115,10 +113,9 @@ export class ExploracaoCombate extends Phaser.Scene {
             welcome: this.handleWelcome.bind(this),
             player_joined: this.handlePlayerJoined.bind(this),
             player_left: this.handlePlayerLeft.bind(this),
-            item_despawned: this.handleItemDespawned.bind(this),
-            items_respawned: this.handleItemsRespawned.bind(this),
             combat_event: this.handleCombatEvent.bind(this),
             enemy_died: this.handleEnemyDied.bind(this),
+            enemy_spawned: this.handleEnemySpawned.bind(this),
             player_died: this.handlePlayerDied.bind(this),
             level_up: this.handleLevelUp.bind(this),
             inventory_update: this.handleInventoryUpdate.bind(this),
@@ -147,22 +144,36 @@ export class ExploracaoCombate extends Phaser.Scene {
             if (pid !== this.myId) this.spawnRemotePlayer(data.state.players[pid]);
         }
         for (const eid in data.state.enemies) this.spawnEnemy(data.state.enemies[eid]);
-        for (const iid in data.state.items) this.spawnItem(data.state.items[iid]);
+
+        // Respawn (Round 1): servidor concedeu invulnerabilidade autoritária de 3s (ver join em
+        // server.js). Correção Round 2 (bug do movimento congelado): usa `respawnShield`, flag
+        // própria que não gateia movimento nem o collider de ataque — a proteção real contra dano
+        // já é garantida no servidor, independente do client. Antes reaproveitava `invulnerable`
+        // (do knockback), o que travava o jogador parado em cima do inimigo por 3s.
+        if (data.reviveu) {
+            this.player.respawnShield = true;
+            this.time.delayedCall(3000, () => this.player.respawnShield = false);
+        }
 
         // Estado inicial de inventário/atributos pra UIScene (já veio dentro do welcome)
         this.game.events.emit('inventory_update', { personagem_id: this.myId, itens: this.playerStats.inventario });
-        this.game.events.emit('stats_updated', {
-            personagem_id: this.myId,
-            hp_max: this.playerStats.hp_max,
-            dano_base: this.playerStats.dano_base,
-            defesa_base: this.playerStats.defesa_base,
-            hp_atual: this.playerStats.hp_atual
-        });
+        this.atualizarStatsUI();
     }
 
     // OUTROS JOGADORES ENTRANDO/SAINDO
     handlePlayerJoined(data) {
-        if (data.player.id !== this.myId) this.spawnRemotePlayer(data.player);
+        if (data.player.id === this.myId) return;
+        // Causa B (Round 2): reconexão rápida do mesmo id mandava um segundo player_joined antes
+        // do player_left do anterior chegar — spawnRemotePlayer criava um sprite novo sem destruir
+        // o velho, que virava órfão (visível, nunca atualizado por state_update, nunca removido).
+        // Idempotente: se o id já existe, destrói o sprite/graphics velho antes de recriar.
+        if (this.otherPlayers.has(data.player.id)) {
+            const rp = this.otherPlayers.get(data.player.id);
+            rp.hpGraphics.destroy();
+            rp.sprite.destroy();
+            this.otherPlayers.delete(data.player.id);
+        }
+        this.spawnRemotePlayer(data.player);
     }
 
     handlePlayerLeft(data) {
@@ -174,28 +185,17 @@ export class ExploracaoCombate extends Phaser.Scene {
         }
     }
 
-    // COLETA DE ITENS
-    handleItemDespawned(data) {
-        if (data.playerId === this.myId) {
-            this.score += 10;
-            this.scoreText.setText('DADOS COLETADOS: ' + this.score);
-        }
-        if (this.itemData.has(data.itemId)) {
-            this.itemData.get(data.itemId).destroy();
-            this.itemData.delete(data.itemId);
-        }
-    }
-
-    handleItemsRespawned(data) {
-        for (const iid in data.items) {
-            this.spawnItem(data.items[iid]);
-        }
+    // RESPAWN CONTÍNUO DE INIMIGOS (Causa C, Round 2): state_update não cria inimigo novo,
+    // só atualiza os que o client já conhece — inimigo novo precisa de aviso próprio.
+    handleEnemySpawned(data) {
+        this.spawnEnemy(data.enemy);
     }
 
     // RESULTADO DE COMBATE (HP UPDATE)
     handleCombatEvent(data) {
         if (data.playerId === this.myId) {
             this.playerStats.hp_atual = data.player_hp;
+            this.atualizarStatsUI();
         } else if (this.otherPlayers.has(data.playerId)) {
             this.otherPlayers.get(data.playerId).hp_atual = data.player_hp;
         }
@@ -206,10 +206,6 @@ export class ExploracaoCombate extends Phaser.Scene {
 
     // EVENTOS DE MORTE
     handleEnemyDied(data) {
-        if (data.killerId === this.myId) {
-            this.score += 50;
-            this.scoreText.setText('DADOS COLETADOS: ' + this.score);
-        }
         if (this.enemyData.has(data.enemyId)) {
             const e = this.enemyData.get(data.enemyId);
             e.hpGraphics.destroy();
@@ -237,7 +233,14 @@ export class ExploracaoCombate extends Phaser.Scene {
         this.playerStats.dano_base = data.dano_base;
         this.playerStats.defesa_base = data.defesa_base;
         this.playerStats.hp_atual = data.hp_atual;
-        this.game.events.emit('stats_updated', data);
+        this.atualizarStatsUI();
+
+        // Indicador transitório (S4): texto simples que aparece e some sozinho após 3s.
+        // `remove()` cancela o delayedCall anterior se subir 2 níveis em sequência rápida,
+        // pra não sumir o texto do nível mais novo antes da hora.
+        this.levelUpText.setText(`NÍVEL ${data.nivel}!`);
+        if (this.levelUpTimer) this.levelUpTimer.remove();
+        this.levelUpTimer = this.time.delayedCall(3000, () => this.levelUpText.setText(''));
     }
 
     // INVENTÁRIO / ATRIBUTOS (autoridade 100% do servidor — client só espelha e repassa pro EventBus)
@@ -253,7 +256,21 @@ export class ExploracaoCombate extends Phaser.Scene {
         this.playerStats.dano_base = data.dano_base;
         this.playerStats.defesa_base = data.defesa_base;
         this.playerStats.hp_atual = data.hp_atual;
-        this.game.events.emit('stats_updated', data);
+        this.atualizarStatsUI();
+    }
+
+    // Centraliza o emit de 'stats_updated' a partir do `playerStats` atual — evita repetir o
+    // mesmo shape em todo handler que muda hp_atual/hp_max/dano_base/defesa_base (Bug #2 do
+    // teste de campo: handleCombatEvent atualizava hp_atual mas não avisava a UIScene).
+    atualizarStatsUI() {
+        this.game.events.emit('stats_updated', {
+            personagem_id: this.myId,
+            nivel: this.playerStats.nivel,
+            hp_max: this.playerStats.hp_max,
+            dano_base: this.playerStats.dano_base,
+            defesa_base: this.playerStats.defesa_base,
+            hp_atual: this.playerStats.hp_atual
+        });
     }
 
     // SYNC DE POSIÇÕES (20Hz)
@@ -297,14 +314,6 @@ export class ExploracaoCombate extends Phaser.Scene {
             sprite: sprite, targetX: state.x, targetY: state.y,
             hp_atual: state.hp_atual, hp_max: state.hp_max, hpGraphics: this.add.graphics()
         });
-    }
-
-    spawnItem(state) {
-        const sprite = this.add.rectangle(state.x, state.y, 20, 20, 0xffff00);
-        this.physics.add.existing(sprite, false);
-        sprite.serverId = state.id;
-        this.itemsGroup.add(sprite);
-        this.itemData.set(state.id, sprite);
     }
 
     // ─────────────────────────────────────────────────────────────────

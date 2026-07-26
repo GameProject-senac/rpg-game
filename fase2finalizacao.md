@@ -7,6 +7,10 @@
 > **Regra de fechamento (decisão do projeto):** a Fase 2 só será considerada fechada quando passar no **teste manual conduzido pelo dono do projeto**. Aprovação por teste automatizado ou por inspeção de código não é suficiente.
 >
 > **Atualização (sessão seguinte, registrada na íntegra em §8):** diagnóstico completo feito, causa raiz confirmada (playerStats stale + corrida de sessão na morte), correções do Round 1 implementadas mas **ainda não validadas em teste de campo** — o teste ficou bloqueado por dois achados novos no meio do caminho: inconsistência de tipo do `personagem_id` (number vs. string) e a seleção de personagem exibindo nível desatualizado. Ver §8 para o estado exato e o ponto de retomada.
+>
+> **Atualização (sessão seguinte a essa, registrada em §8.8-§8.9):** os dois bloqueios foram resolvidos — normalização de tipo do `personagem_id` **implementada**, bug de nível na seleção **diagnosticado e adiado** (confirmado cosmético, não bloqueia). Round 1 está com todas as correções implementadas, **aguardando apenas o teste de campo manual** para fechar.
+>
+> **Atualização (sessão seguinte a essa, registrada na íntegra em §10):** Round 1 **fechado e validado em campo**. Round 2: 3 dos 4 itens validados em campo (respawn de inimigos revertido para 3/7, nível visível na UI, fantasma duplicado corrigido). Falta só um filtro de renderização (esconder `tipo='Recurso'` na barra de itens) para fechar o Round 2 — e com ele, a Fase 2 inteira. Ver §10 para o estado exato e o ponto de retomada.
 
 ---
 
@@ -274,13 +278,275 @@ Dono do projeto confirmou: matou inimigos com o Tanque Teste (id=5), banco refle
 
 O teste de campo **nunca chegou a validar a Causa A nem a corrida de sessão**, porque o dono do projeto não conseguiu morrer — os inimigos se esgotam (Causa C, sem respawn, Round 2) antes de gerar uma morte. Método combinado para amanhã: ficar parado apanhando de propósito (sem contra-atacar) para forçar a morte sem depender de mais inimigos.
 
+### 8.11a S5 (tremida) — corrigida, Opção B aplicada
+
+Causa raiz (§ diagnóstico anterior): `roundPixels: true` + lerp fracionário (0.08) na câmera, combinado com a faixa de perseguição vertical muito maior que a horizontal (mundo 2000×2000 vs viewport 1920×920) — jogador não tremia, a câmera tremia visualmente.
+
+**Correção aplicada** (`ExploracaoCombate.js`): `this.cameras.main.startFollow(this.player, true);` — câmera segue direto (lerp default = 1, instantâneo), `roundPixels` mantido ligado. Decisão do dono do projeto: manter nitidez pronta para quando a arte real (Godot) chegar, sem desligar `roundPixels` (evita retrabalho).
+
+**Pendência de polimento registrada (NÃO fazer agora):** reintroduzir suavização de câmera sincronizada com o passo de física, mantendo nitidez — só decidir quando a equipe de design entregar os sprites reais, porque resolução/estilo de arte/tamanho em pixels do personagem definem o ajuste correto. Configurar agora seria adivinhar.
+
+### 8.12 Round 2 — Item em andamento: Respawn de inimigos (Causa C)
+
+Autorizado pelo dono do projeto. Valores travados (não alterar sem nova autorização): população inicial 3, teto 7, +1 a cada 10s enquanto houver menos de 7 — comportamento intencional ("mapa sobe de 3 pra 7 nos primeiros ~40s, jogador joga esvaziando").
+
+**Benefício extra registrado:** com o respawn funcionando, o próximo teste de campo do dono do projeto também valida a **invulnerabilidade de respawn** (§8.11), implementada mas ainda não testada por falta de inimigos vivos no momento da morte.
+
+**Implementado** (`server/server.js` + `ExploracaoCombate.js`):
+- Timer próprio (`ENEMY_RESPAWN_INTERVAL = 10000`, mesmo padrão do `SNAPSHOT_INTERVAL` já existente) — não acoplado ao tick de 20Hz.
+- 4 pontos fixos de spawn (`ENEMY_SPAWN_POINTS`, os 3 originais + 1 novo no 4º quadrante), ciclados a cada novo spawn; população inicial continua sendo os 3 primeiros.
+- `state_update` confirmado (por leitura de `handleStateUpdate`) como incapaz de introduzir inimigo novo ao client — só atualiza posição de ids já conhecidos. Novo tipo `enemy_spawned` (payload `{ enemy }`) criado espelhando exatamente o padrão já existente de `items_respawned`/`handleItemsRespawned`; client trata em `handleEnemySpawned` chamando `this.spawnEnemy(data.enemy)` (função de spawn já existente, não duplicada).
+- Sem checagem de "não nascer em cima de jogador" — decisão aprovada do dono do projeto (risco desprezível, fora do padrão atual do projeto). Observação registrada: com 4 posições fixas e teto 7, inimigos podem nascer sobrepostos entre si; aceito, sem ação (nascem espaçados de 10s e saem do canto rápido).
+- `node --check` validado em ambos os arquivos. Smoke test ao vivo não rodado nesta sessão — porta 8080 já ocupada pelo servidor que o dono do projeto já mantinha rodando; evitado derrubar processo alheio. Validação por leitura de código completa.
+
+**Próximo passo:** dono do projeto reinicia o próprio servidor (pra carregar o código novo — Node não faz hot-reload) e roda o teste de campo. Esse teste agora também valida a invulnerabilidade de respawn (população de inimigos garantida).
+
+### 8.13 Bug novo #4 — Invencibilidade permanente (introduzido pela invulnerabilidade de respawn, corrigido)
+
+**Sintoma:** após a correção do respawn, surgiu invencibilidade permanente — o personagem tomava 1-2 golpes e travava invencível pra sempre; precisava de 3+ colisões pra sofrer o primeiro dano real. F5 restaurava vulnerabilidade por 1-2 golpes e travava de novo.
+
+**Causa raiz confirmada:** `reviveu`/a concessão de invulnerabilidade era recalculada do `hp_atual` do banco a cada join (`row.hp_atual <= 0`). Como a cura só existe em memória (grava no banco só via snapshot de 10s ou `liberarPersonagem`), e os personagens de teste já estavam com `hp_atual <= 0` persistido de sessões anteriores (confirmado por `SELECT` nesta mesma conversa, §8.11), a condição nunca deixava de ser verdadeira — todo join (inclusive um F5) reconcedia uma nova janela de 3s. Não era a flag travada; era a condição sendo satisfeita de novo, indefinidamente. "3+ colisões pra sofrer o primeiro dano" batia com o tempo de reaproximação pós-knockback consumindo a janela de 3s sempre renovada.
+
+**Correção implementada — separação de cura (estado permanente) e invulnerabilidade (evento transitório):**
+- **Cura** (`server/server.js`, join): continua lendo `row.hp_atual <= 0` do banco, idempotente, cobre os personagens já corrompidos de testes anteriores. Sem mudança de comportamento aqui.
+  ```js
+  const precisaCurar = row.hp_atual <= 0;
+  if (precisaCurar) { player.hp_atual = player.hp_max; }
+  ```
+- **Invulnerabilidade**: novo `Set` transitório `respawnPendente` (mesmo padrão de `activeSessions`, chave = `personagem_id`), populado no INSTANTE da morte (`attack_enemy`) e consumido (`Set.delete()`, remove e retorna se existia) no PRÓXIMO join daquele personagem — não depende mais do banco.
+  ```js
+  // na morte:
+  respawnPendente.add(player.id);
+  // no join:
+  const concederInvulnerabilidade = respawnPendente.delete(requestedId);
+  if (concederInvulnerabilidade) { player.invulneravelAte = Date.now() + 3000; }
+  ```
+- `welcome.reviveu` agora reflete `concederInvulnerabilidade`, não mais a cura.
+
+**Efeito colateral correto (não é bug):** um F5 com o personagem ainda vivo não concede mais invulnerabilidade de graça — só uma morte real popula `respawnPendente`. Mais correto que o comportamento anterior; imunidade agora significa exatamente "morri e renasci".
+
+**Ponta solta registrada (NÃO corrigir agora — refinamento futuro):** a cura continua só em memória até o snapshot/saída persistir no banco — existe uma janela onde o banco mostra HP negativo mesmo com o personagem já curado, e a tela de seleção pode exibir HP velho por alguns segundos. Cosmético agora que a invulnerabilidade não depende mais do banco. Refinamento futuro: persistir a cura no banco no momento do join fecharia essa fresta.
+
+`node --check` validado. **Próximo teste de campo agora valida de verdade a invulnerabilidade de respawn:** morrer perto de um inimigo, renascer, confirmar ~3s de imunidade e que ela **acaba** depois — o teste que o bug anterior impedia.
+
 ### 8.6 Round 2 — continua intocado
 
 Causa B (fantasma por handler não-idempotente), respawn de inimigos (3 inicial / teto 7 / +1 a cada 10s), S4 (nível/level-up visível na UI), S5 (tremida vertical — reavaliar só depois da Causa A validada), remoção da moeda do inventário (`tipo='Recurso'`).
 
-### 8.7 Ponto de retomada explícito (amanhã)
+### 8.7 Ponto de retomada explícito (histórico — superado por §8.8/§8.9)
 
-1. Implementar a normalização de tipo do `personagem_id` (§8.3) — `join` + `list_characters` na mesma entrega.
-2. Investigar e corrigir o bug de nível desatualizado na seleção (§8.4).
+1. ~~Implementar a normalização de tipo do `personagem_id` (§8.3) — `join` + `list_characters` na mesma entrega.~~ — feito, ver §8.8.
+2. ~~Investigar e corrigir o bug de nível desatualizado na seleção (§8.4).~~ — investigado, causa raiz confirmada, correção **adiada por decisão do dono do projeto** (cosmético). Ver §8.9.
 3. Com os dois resolvidos, dono do projeto roda o teste de campo forçando a morte (apanhar sem revidar) para validar Round 1 completo: Causa A + corrida de sessão + os dois bugs de tipo.
 4. Round 1 só fecha quando esse teste passar. Round 2 só começa depois disso.
+
+### 8.8 Item 1 implementado — Normalização de tipo do `personagem_id`
+
+**Autorizado e implementado nesta sessão.** Correção aplicada em `server/server.js`, dois pontos, mesma entrega, exatamente como proposto em §8.3:
+
+```js
+// join — ponto de entrada único da normalização
+const requestedId = String(data.personagem_id);
+```
+
+```js
+// list_characters — em_uso comparado com o mesmo tipo
+em_uso: activeSessions.has(String(row.id))
+```
+
+**Cadeia de propagação verificada ponto a ponto** (exigido antes de aceitar a entrega): `personagemId` (variável de sessão da conexão) e `player.id` (copiado de `personagemId` na criação do objeto em `gameState.players`) são a única fonte de onde todo id sai do servidor daqui pra frente — `welcome.id`, `combat_event.playerId`, `enemy_died.killerId`, `player_died.playerId`, `level_up.personagem_id`, `inventory_update`/`stats_updated.personagem_id`, `player_left.id`, e as duas pontas do `activeSessions` (`add` no `join`, `delete` em `liberarPersonagem`). Nenhum desses reintroduz `data.personagem_id` bruto — todos herdam a string normalizada. `state_update` (broadcast do `gameState.players` inteiro) também sai consistente como consequência, sem precisar de edição própria (chaves de objeto já são string por natureza do JS; o campo `id` de cada player já vem normalizado).
+
+`node --check server/server.js` validado sem erro. Resolve os dois bugs de identidade confirmados no diagnóstico anterior: fantasma do próprio jogador em `handleWelcome` e jogadores remotos nunca atualizando em `handleStateUpdate`. Nenhuma mudança no client foi necessária.
+
+### 8.9 Item 2 diagnosticado — Nível desatualizado na seleção (adiado, cosmético)
+
+**Query solicitada** (`SELECT id, nome, classe, nivel, experiencia FROM personagens WHERE classe='tanque'`): resultado com **uma única linha** — id=5, "Tanque Teste", `nivel=2`, `experiencia=50`. Descarta a hipótese original de confusão entre duas linhas "Tanque" — não há linha concorrente.
+
+**Causa raiz confirmada:** `SelecaoPersonagem.js` não tem nenhum mecanismo de atualização — a lista é buscada **uma única vez** no `create()` (`onopen` dispara `list_characters`, a resposta chama `renderList()` e imediatamente `closeConnection()`). Não há polling, nem re-fetch em foco/wake, nem cache indevido no servidor (a query SQL é live e correta, confirmado por inspeção). O único caminho de reentrada na cena é `MainMenu → scene.start('SelecaoPersonagem')` (via reload completo da página); não existe caminho de volta a partir de `ExploracaoCombate`. Logo, "nível 1" só é possível se a tela observada for uma aba/instância renderizada **antes** da subida de nível — consistente com o padrão de múltiplas abas já usado em testes de campo anteriores (id=3/id=4).
+
+**Confirmado pelo dono do projeto:** a aba observada era antiga, aberta antes da subida de nível. **Não é bug de dado** (banco sempre esteve correto) — é staleness de tela (fetch-once sem re-sincronização).
+
+**Decisão do dono do projeto:** NÃO corrigir agora. Classificado como pendência cosmética/polimento, não bloqueia o Round 1. Registrado aqui para tratar junto do resto do polimento (Round 2 ou fase de polimento dedicada) — correção "de verdade" seria a tela se atualizar ao voltar a ficar ativa (`wake`/`resume` do Phaser reenviando `list_characters`). Decisão sobre single-tab vs. múltiplas abas simultâneas também adiada para essa mesma ocasião.
+
+**Mitigação para o teste de campo de agora:** recarregar a página (F5) antes de checar a tela de seleção, garantindo dado fresco durante a validação do Round 1.
+
+### 8.10 Estado atual — pronto para teste de campo
+
+Round 1 tem todas as correções **implementadas**:
+- Causa A (playerStats/myId stale no restart) — Round 1 anterior.
+- Corrida de sessão morte↔reconecte (`liberarPersonagem` síncrona) — Round 1 anterior.
+- Normalização de tipo do `personagem_id` (§8.8) — **nova nesta sessão**.
+
+Pendência cosmética da seleção (§8.9) diagnosticada e formalmente adiada, não bloqueia.
+
+**Próximo passo:** dono do projeto roda o teste de campo forçando a morte (apanhar sem revidar, sem contra-atacar) para validar Round 1 completo de uma vez: Causa A + corrida de sessão + normalização de tipo. Round 1 só fecha quando esse teste passar. Round 2 (Causa B, respawn de inimigos, S4, S5, moeda no inventário) só começa depois — e a pendência da tela de seleção (§8.9) entra na fila do polimento, junto do Round 2 ou de uma fase dedicada.
+
+### 8.11 Bug novo #3 — Modo zumbi persistia por HP negativo herdado da morte (diagnosticado e corrigido)
+
+**Sintoma do teste de campo:** corrida de sessão confirmada corrigida (zero `[join] Recusado` no log — o reconecte pós-morte é sempre aceito). Porém o modo zumbi **persistia por uma causa nova**: após renascer, o personagem andava (predição local) mas não tinha barra de HP, não causava nem tomava dano.
+
+**Causa raiz confirmada no código (não hipótese):** o servidor nunca clampa `hp_atual` em zero no combate (`player.hp_atual -= danoNoPlayer`, sem `Math.max`), e `liberarPersonagem` persiste esse valor negativo literalmente no banco. O `join` do reconecte automático carrega esse `hp_atual` negativo direto do banco (`row.hp_atual`, sem cura). O servidor aceita o `join` normalmente (join funciona, welcome é enviado), mas o guard de dispatch `if (!player || player.hp_atual <= 0) return` — que roda antes de QUALQUER ação, inclusive `player_move` — descarta silenciosamente tudo o que o client envia depois disso. O client não estava quebrado: refletia fielmente um servidor que já considerava aquele personagem morto. A hipótese inicial (falha no ciclo do socket / `handleWelcome` não executando) foi **refutada pelo próprio sintoma relatado** — se `playerStats` estivesse `null`, o `update()` teria retornado antes de aplicar qualquer movimento, e o personagem não andaria.
+
+**Estado real do banco no momento do diagnóstico** (confirmado via `SELECT`): 4 dos 5 personagens de teste já estavam com `hp_atual <= 0` (id=1: 0, id=2: -8, id=3: 0, id=4: -4; só id=5 vivo, 37) — evidência prática, não só teórica, de que a cura precisava cobrir dados já corrompidos.
+
+**Correção implementada (autorizada em duas partes):**
+
+1. **Cura no `join`** (`server/server.js`), não na morte — decisão justificada e aprovada: curar só na morte não resolveria os 4 registros já corrompidos (a cura não seria retroativa); curar no `join` cobre mortes futuras E dados já corrompidos no mesmo ponto, seguindo o mesmo padrão do item 1 (join como ponto único de saneamento de estado ao materializar o personagem). Trecho:
+   ```js
+   const reviveu = row.hp_atual <= 0;
+   if (reviveu) {
+       player.hp_atual = player.hp_max;
+       player.invulneravelAte = Date.now() + 3000;
+   }
+   ```
+   (`player.hp_max` já vem calculado por `recalcularAtributosEfetivos(player)`, chamado logo antes — nenhuma reordenação foi de fato necessária, só inserir a checagem depois dessa chamada.)
+
+2. **Invulnerabilidade autoritária de 3s**, amarrada à mesma condição de respawn (`reviveu`) — servidor decide, client só reflete:
+   - Servidor grava `player.invulneravelAte` no `join` (acima) e **enforça** em `attack_enemy` (`server/server.js`): se `Date.now() < player.invulneravelAte`, o dano ao jogador é pulado (o inimigo ainda toma dano — o jogador pode revidar, só não pode ser ferido). Checagem por tempo, sem `setTimeout`/cleanup — expira sozinha.
+   - `welcome` ganhou o campo `reviveu: true/false`.
+   - Client (`ExploracaoCombate.js`, `handleWelcome`) reaproveita a MESMA flag/padrão já usado no knockback (`this.player.invulnerable` + `this.time.delayedCall`) — nenhum sistema novo, só estendido para cobrir o respawn.
+
+`node --check` validado em ambos os arquivos.
+
+**Caso de borda registrado (NÃO corrigido agora — decisão de design pendente para o polimento):** o gatilho da cura/invulnerabilidade é "entrou com `hp_atual <= 0`", o que cobre exatamente o caso de morte. Mas um jogador que fecha a aba/desconecta com pouca vida (ex.: 5/100, não zero) reconecta com essa vida baixa, sem cura nem invulnerabilidade — pode morrer rápido ao voltar. Não bloqueante, raro. **Decisão pendente para quando o polimento for tratado:** reconectar sempre cura pra vida cheia (mesmo sem ter chegado a zero), ou mantém o estado exato de HP de quando saiu? Fica junto do resto do polimento (§8.9, Round 2).
+
+**Próximo passo:** dono do projeto roda o teste de morte novamente — agora valida Round 1 por completo: Causa A + corrida de sessão + normalização de tipo + cura/invulnerabilidade no respawn.
+
+---
+
+## 9. Estado consolidado — ponto único de retomada (superado tudo antes desta seção)
+
+> Esta seção é o resumo vivo do estado real. Em caso de dúvida sobre "onde paramos", leia aqui primeiro; as seções anteriores (§1-§8) são o histórico/diagnóstico que chegou até aqui.
+
+### 9.1 Round 1 — FECHADO E VALIDADO EM CAMPO
+
+- Causa A (`playerStats`/`myId` stale no `scene.restart()`).
+- Corrida de sessão morte↔reconecte (`liberarPersonagem` síncrona).
+- Normalização de tipo do `personagem_id` (string em toda a cadeia).
+- Cura no respawn (join cura `hp_atual <= 0` pra `hp_max`).
+
+Todas validadas no teste de campo: modo zumbi morto, ressurreição funciona, persistência de HP/nível funciona.
+
+### 9.2 Round 2 — EM ANDAMENTO
+
+**Já implementado e validado em campo:**
+- Respawn de inimigos (contínuo, início 3, teto 7, +1 a cada 10s) — mapa não esvazia mais.
+- Câmera-B (`startFollow` sem lerp fracionário, `roundPixels` mantido) — tremida (S5) resolvida.
+
+**Implementado, aguardando teste de campo (próximo teste do dono):**
+- Correção (b) da invencibilidade permanente (§8.13): sinal transitório `respawnPendente` (`Set` server-side por `personagem_id`), populado na morte, consumido uma vez no join via `Set.delete()`. Invulnerabilidade agora depende do EVENTO de morte, não do `hp_atual` do banco. Cura permanece ligada a `row.hp_atual <= 0` (mantém a faxina dos personagens 1-4, já corrompidos de testes anteriores).
+  - **O que este teste deve validar:** (1) morrer perto de um inimigo → renascer com ~3s de invulnerabilidade; (2) **crítico** — a invulnerabilidade EXPIRA depois de ~3s e o dano volta ao normal (o bug anterior impedia observar isso); (3) F5 com o personagem ainda vivo NÃO concede invulnerabilidade (comportamento correto, não é regressão).
+
+**Ainda na fila do Round 2 (não iniciado):**
+- S4 — nível/level-up visível na UI (hoje sobe no banco mas é invisível no jogo; arqueiro chegou a nível 8 sem feedback visual).
+- Causa B — fantasma por handler não-idempotente (`handlePlayerJoined`/`spawnRemotePlayer` sem checar existência antes de instanciar).
+- Remoção da moeda do inventário (`tipo='Recurso'`).
+
+### 9.3 Pendências cosméticas / refinamento (registradas, não bloqueiam)
+
+- Seleção mostra nível/HP com defasagem (fetch-once, sem re-sync — §8.9). Mitigado com F5 antes de checar.
+- Cura do respawn é em memória; banco só atualiza no snapshot/saída — fresta onde o banco mostra HP negativo com o personagem já curado (§8.13). Refinamento futuro: persistir a cura no join.
+- Barra de HP parece seguir a direção do personagem (cosmético menor, não investigado a fundo).
+- Inimigos podem nascer sobrepostos (4 posições fixas, teto 7) — na prática não incomoda, dado o espaçamento de 10s entre spawns.
+- Trava pontual de movimento ("preso subindo") observada uma vez — provável rede, investigar se recorrer.
+
+### 9.4 Decisões de design adiadas (registradas, sem prazo)
+
+- Login — destrava: seleção filtrada por dono, posse real de personagem, fecha a janela de "roubo" pós-morte (§1.2 do roadmap), e a decisão de reconectar-com-pouca-vida abaixo.
+- Combate com ação intencional (ataque/defesa) — hoje é só colisão que fere os dois lados.
+- Modelo A de conexão (`NetworkManager`, socket único entre cenas) — migração planejada pós-Fase-2 (roadmap §1.2).
+- Reconectar com pouca vida (não zero, ex. 5/100): cura sempre pra cheio, ou mantém o estado exato de quando saiu? (§8.11 caso de borda).
+- Loop de prestígio / new game+ — personagem fica forte demais e "colapsa" pra uma fase mais avançada.
+- Afinamento fino da câmera — só decidir quando a equipe de design (Godot) entregar os sprites reais (§8.11a).
+
+### 9.5 Ponto de retomada — HISTÓRICO (superado por §10)
+
+O dono do projeto vai rodar o teste de campo da correção (b) da invulnerabilidade (§9.2). Conforme o resultado:
+- **Se passar:** Round 1 e os dois itens já validados do Round 2 seguem fechados; avançar para os itens restantes do Round 2 (S4, Causa B, remoção da moeda) — nessa ordem ou na ordem que o dono preferir.
+- **Se falhar:** diagnosticar (MODO DEBUG) antes de avançar — não seguir para o resto do Round 2 com essa correção ainda instável.
+
+> Resultado: passou. Ver §10 para o que veio depois — os dois bugs novos revelados por esse mesmo teste (movimento congelado no respawn, número de HP desatualizado), os 4 itens do Round 2 e o estado atual.
+
+---
+
+## 10. Estado consolidado — sessão de fechamento parcial do Round 2 (superado tudo antes desta seção)
+
+> Esta seção é o resumo vivo do estado real, mesma função do §9 anterior. Em caso de dúvida sobre "onde paramos", leia aqui primeiro; §1-§9 são histórico/diagnóstico que chegou até aqui.
+
+### 10.1 Round 1 — FECHADO E VALIDADO EM CAMPO (sem mudança desde §9.1)
+
+- Causa A (`playerStats`/`myId` stale no `scene.restart()`).
+- Corrida de sessão morte↔reconecte (`liberarPersonagem` síncrona).
+- Normalização de tipo do `personagem_id` (string em toda a cadeia).
+- Cura no respawn (join cura `hp_atual <= 0` pra `hp_max`).
+
+### 10.2 Correção (b) da invulnerabilidade — validada, mas revelou 2 bugs novos (ambos corrigidos)
+
+O teste de campo da correção (b) (`respawnPendente`, §8.13/§9.2) passou no que se propunha validar: imune ~3s ao renascer, imunidade expira corretamente, F5 com personagem vivo não concede imunidade de graça. Mas o próprio teste — a primeira vez que alguém reengajou em combate logo após renascer — expôs dois bugs que não tinham como aparecer antes:
+
+**Bug 1 — invulnerabilidade de respawn congelava o movimento (corrigido).** Causa raiz: `this.player.invulnerable` era uma única flag usada para dois propósitos (knockback: imune a dano + sem controle de movimento; respawn: reaproveitava a mesma flag). Certo para knockback, errado para respawn — o jogador ficava preso em cima do inimigo por 3s, o oposto do propósito da invulnerabilidade. Efeito colateral extra encontrado: a mesma flag também bloqueava o `collider` de ataque, então o jogador nem conseguia revidar durante o respawn, contrariando o próprio comportamento autoritário do servidor ("pode revidar, só não pode ser ferido"). **Correção:** flag nova e separada, `this.player.respawnShield` (`ExploracaoCombate.js`, `create()` + `handleWelcome`) — não gateia nem movimento nem o collider de ataque. Knockback (`this.player.invulnerable`) intocado. Gancho para feedback visual futuro (blink/tint) deixado preparado, sem efeito implementado (decisão explícita: fica pro polimento).
+
+**Bug 2 — número de HP embaixo desatualizado (corrigido).** Causa raiz: a barra de HP (`update()`) lê `this.playerStats.hp_atual` direto, todo frame; o número embaixo (`UIScene.renderStats`) só atualiza ao receber o evento `stats_updated`. Três dos quatro pontos que escrevem `hp_atual` emitiam esse evento (`handleWelcome`, `handleLevelUp`, `handleStatsUpdated`) — `handleCombatEvent` (dano em combate normal) não emitia, então o número ficava preso no último valor de um desses três. **Correção:** helper `atualizarStatsUI()` centraliza o emit a partir do `playerStats` atual; todos os 4 pontos passaram a chamá-lo, incluindo `handleCombatEvent` quando o dano é no próprio jogador.
+
+Independentes um do outro — nenhum foi introduzido pela correção (b), só ficaram visíveis porque foi o primeiro teste que conseguiu morrer e reengajar em combate imediatamente depois.
+
+`node --check` validado em `server.js` e `ExploracaoCombate.js` em toda a sessão.
+
+### 10.3 Round 2 — 3 de 4 itens FECHADOS e validados em campo; falta 1
+
+| # | Item | Status |
+|---|---|---|
+| 1 | Reverter config de teste dos inimigos (10 → 3 inicial / 7 teto) | ✅ Validado em campo |
+| 2 | S4 — nível visível na UI + indicador transitório "NÍVEL X!" | ✅ Validado em campo |
+| 3 | Remover moeda/score (Opção A: tudo) | ⚠️ Quase — ver §10.4 |
+| 4 | Causa B — fantasma duplicado (`handlePlayerJoined` idempotente) | ✅ Validado em campo (2 abas, "em uso" correto) |
+
+Já validados em campo antes desta sessão (sem mudança): respawn de inimigos contínuo, câmera-B (tremida S5 resolvida), invulnerabilidade de respawn (§10.2).
+
+**Item 1 — nota técnica:** a config de teste (10/10) tinha exigido um ajuste necessário (não cosmético) no loop de população inicial — indexação com módulo (`ENEMY_SPAWN_POINTS[i % ENEMY_SPAWN_POINTS.length]`) porque só existem 4 pontos fixos de spawn e o teste excedia esse número. Revertido para 3/7, mas o módulo ficou (inofensivo com 3 < 4, resultado idêntico a antes — não precisa reverter).
+
+**Item 2 — abordagem:** texto simples "NÍVEL X!" (`this.levelUpText`, `ExploracaoCombate.js`) aparece por 3s e some sozinho (`delayedCall` com cancelamento se subir 2 níveis em sequência rápida). Nível também passou a aparecer permanentemente na linha de stats da `UIScene` (`NÍVEL: N  HP: ...`). Sem sistema visual elaborado, conforme escopo pedido.
+
+**Item 3 — Opção A aprovada (remover tudo, não só o filtro):** implementado por completo — servidor (`spawnMoedas`, `pickup_item`, `player.score` em ambos os pontos — o `+10` da moeda e também o `+50` de matar inimigo, morto do mesmo jeito) e client (`itemsGroup`, `itemData`, `spawnItem`, `handleItemDespawned`, `handleItemsRespawned`, `this.score`/`scoreText` "DADOS COLETADOS"). `UIScene.renderInventory` não foi tocado — é a base genérica reaproveitável pro loot futuro, só que agora nunca recebe nada porque nada mais insere em `inventario` por esse caminho.
+
+### 10.4 Item 3 — ponta solta que falta para fechar o Round 2
+
+Dados **já persistidos** no banco de sessões de teste anteriores (linhas `tipo='Recurso'`, item_id='moeda') continuam na tabela `inventario` e ainda aparecem na barra de itens embaixo, junto com equipamento legítimo (ex.: espada/escudo do arqueiro) — porque a remoção do item 3 parou a criação de linhas novas, mas não apaga as antigas nem filtra o que já existe.
+
+**Combinação acordada para fechar (duas partes, uma de cada lado):**
+1. **Dono do projeto (hoje, fora desta sessão):** apaga manualmente via SQL as linhas `tipo='Recurso'` da tabela `inventario`. Limpa o dado persistido.
+2. **Agente (amanhã):** filtrar a renderização da barra de itens (`UIScene.js`, `renderInventory`) para **não desenhar `tipo='Recurso'`**, mantendo `tipo='Equipamento'` visível — Opção 1 (filtro na renderização, não no backend). Isso garante blindagem mesmo que sobre algum `Recurso` residual no banco (ex.: outro personagem de teste não limpo). **Não implementado ainda — só combinado.**
+
+Depois do filtro + a limpeza do banco, o dono roda o teste final do Round 2.
+
+### 10.5 Moeda/score — registro de design (não é bug, é decisão)
+
+Removidos por decisão do dono do projeto porque eram **ilusórios**: o `player.score` do servidor nunca era lido em lugar nenhum (campo morto desde sempre — nem `+10` nem `+50`), e o "DADOS COLETADOS" do client era um contador local volátil (zera no F5, nunca sincroniza com o servidor). Manter um placar que engana é pior que não ter.
+
+**"Coletar moeda pra pontuar" está fora do design do jogo.** O que entra no futuro é coletar **ITENS IMPORTANTES** (loot com peso — armas, materiais), que nasce junto com o inventário clicável (Round 3 / fase de itens dedicada), não como um placar de pontos.
+
+### 10.6 Inventário clicável — descoberta que mudou o escopo (adiado como trabalho futuro próprio)
+
+Descoberta desta sessão: o inventário do client **nunca funcionou de verdade**. Ele coleta (formava a fila horizontal embaixo) mas não abre, não é clicável, não tem tela/ações — o Pacote 4 só validou o backend por script (`test_pacote4.js`), nunca o client de verdade. Isso não é um bug pontual a corrigir dentro do Round 2 — é uma feature que nunca existiu.
+
+**Decisão do dono do projeto:** UI de inventário clicável fica como **trabalho futuro próprio** (Round 3 / fase de itens), fora do escopo do Round 2. O Round 2 só cuidou de remover a moeda-no-inventário (§10.3/§10.5), não de construir a UI que falta.
+
+### 10.7 Decisões de design adiadas (registradas, sem prazo — lista consolidada)
+
+- Login — destrava: seleção filtrada por dono, posse real de personagem, fecha a janela de "roubo" pós-morte, e a decisão de reconectar-com-pouca-vida abaixo.
+- Combate com ação intencional (ataque/defesa) — hoje é só colisão que fere os dois lados.
+- Modelo A de conexão (`NetworkManager`, socket único entre cenas) — migração planejada pós-Fase-2.
+- `hp_max` não persistido no banco — recalculado sempre de classe+nível via `recalcularAtributosEfetivos`, nunca lido de uma coluna própria. Funciona por design atual (classe+nível são a fonte da verdade), mas registrado como decisão consciente, não descuido.
+- Reconectar com pouca vida (não zero, ex. 5/100): cura sempre pra cheio, ou mantém o estado exato de quando saiu?
+- Loop de prestígio / new game+ — personagem fica forte demais e "colapsa" pra uma fase mais avançada.
+- Afinamento fino da câmera — só decidir quando a equipe de design (Godot) entregar os sprites reais.
+- Inventário clicável (UI real de itens) — Round 3 / fase de itens dedicada (§10.6). Loot com peso (armas, materiais) nasce junto disso; "moeda pra pontuar" não volta.
+
+### 10.8 Ponto de retomada
+
+Amanhã, nessa ordem:
+1. Confirmar que o dono já limpou as linhas `tipo='Recurso'` de `inventario` no banco (§10.4, parte 1).
+2. Implementar o filtro de renderização em `UIScene.renderInventory` — não desenhar `tipo='Recurso'`, manter `tipo='Equipamento'` (§10.4, parte 2). Único item de código pendente no Round 2.
+3. Dono do projeto roda o teste de campo final do Round 2: inimigos 3/7, nível na tela, sem fantasma duplicado, barra de itens só com equipamento.
+4. Se passar: Round 2 fecha, **Fase 2 fica completa** (Round 1 + Round 2 fechados). Próximo passo aí é decidir o que entra na próxima fase (candidatos naturais: Round 3/inventário clicável+loot, ou qualquer item da lista de decisões adiadas em §10.7).
+5. Se falhar: diagnosticar (MODO DEBUG) antes de prosseguir.
