@@ -30,8 +30,9 @@ export class UIScene extends Phaser.Scene {
     }
 
     // Desenha o grid de slots a partir da lista de itens vinda do servidor.
+    // Filtra tipo='Recurso' (ex.: moedas legadas no banco) — a barra só desenha Equipamento.
     renderInventory(itens) {
-        this.itens = itens || [];
+        this.itens = (itens || []).filter(item => item.tipo !== 'Recurso');
         this.slotsContainer.removeAll(true);
 
         const slotSize = 48;
