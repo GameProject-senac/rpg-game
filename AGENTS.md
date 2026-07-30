@@ -159,6 +159,7 @@ CREATE TABLE IF NOT EXISTS inventario (
     item_id VARCHAR(50) NOT NULL,
     quantidade INT DEFAULT 1,
     tipo VARCHAR(30) NOT NULL,
+    equipado BOOLEAN DEFAULT FALSE,
     CONSTRAINT fk_inventario_personagem FOREIGN KEY (personagem_id) REFERENCES personagens(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
@@ -176,6 +177,7 @@ $$\text{Dano Efetivo} = \max\left(1, \; \text{Dano Base do Atacante} - \text{Def
 
 ### FLUXO DE EXECUÇÃO DO ATAQUE
 
+0. **Exceção — Inventário Aberto:** Se o jogador está com `inventarioAberto` (flag autoritativa no servidor, setada por `inventory_open`/`inventory_close`), o combate é **pulado por completo** — nem o jogador nem o inimigo tomam dano no toque. Mesma família da invulnerabilidade de respawn (verificação server-side, não confiar em client). Não "otimizar" removendo essa checagem sem entender a exceção: sem ela, o inimigo ainda tomava dano do toque (e podia morrer sozinho) mesmo com o jogador imune e parado no menu.
 1. **Verificação de Overlap/Hitbox:** A colisão dispara o evento de combate.
 2. **Cálculo Determinístico:** Executa a fórmula de mitigação.
 3. **Subtração de HP:** Atualiza a estrutura de dados do alvo ($\text{HP Atual} \leftarrow \text{HP Atual} - \text{Dano Efetivo}$).
