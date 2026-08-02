@@ -130,6 +130,7 @@ export class ExploracaoCombate extends Phaser.Scene {
             enemy_spawned: this.handleEnemySpawned.bind(this),
             player_died: this.handlePlayerDied.bind(this),
             level_up: this.handleLevelUp.bind(this),
+            xp_update: this.handleXpUpdate.bind(this),
             inventory_update: this.handleInventoryUpdate.bind(this),
             stats_updated: this.handleStatsUpdated.bind(this),
             state_update: this.handleStateUpdate.bind(this)
@@ -151,6 +152,7 @@ export class ExploracaoCombate extends Phaser.Scene {
     handleWelcome(data) {
         this.myId = data.id;
         this.playerStats = data.state.players[this.myId];
+        this.playerStats.xp_proximo_nivel = data.xp_proximo_nivel;
 
         for (const pid in data.state.players) {
             if (pid !== this.myId) this.spawnRemotePlayer(data.state.players[pid]);
@@ -255,6 +257,16 @@ export class ExploracaoCombate extends Phaser.Scene {
         this.levelUpTimer = this.time.delayedCall(3000, () => this.levelUpText.setText(''));
     }
 
+    // BARRA DE XP: canal próprio (não reusa stats_updated) porque dispara a cada golpe, não só
+    // em mudança de hp/atributos — servidor manda experiencia/nivel/xp_proximo_nivel prontos.
+    handleXpUpdate(data) {
+        if (data.personagem_id !== this.myId) return;
+        this.playerStats.experiencia = data.experiencia;
+        this.playerStats.nivel = data.nivel;
+        this.playerStats.xp_proximo_nivel = data.xp_proximo_nivel;
+        this.atualizarStatsUI();
+    }
+
     // TELA DE INVENTÁRIO (Passo 1, Round 3): alterna estado local, avisa o servidor (autoridade
     // real de imunidade/estático) e avisa a UIScene pra abrir/fechar a moldura visual.
     toggleInventoryScreen() {
@@ -291,7 +303,9 @@ export class ExploracaoCombate extends Phaser.Scene {
             hp_max: this.playerStats.hp_max,
             dano_base: this.playerStats.dano_base,
             defesa_base: this.playerStats.defesa_base,
-            hp_atual: this.playerStats.hp_atual
+            hp_atual: this.playerStats.hp_atual,
+            experiencia: this.playerStats.experiencia,
+            xp_proximo_nivel: this.playerStats.xp_proximo_nivel
         });
     }
 

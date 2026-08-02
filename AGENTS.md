@@ -126,6 +126,10 @@ Sempre que executar a transição de uma cena via `scene.start()` ou `scene.swit
 
 O banco de dados relacional **MySQL** é a autoridade máxima de dados persistentes do projeto.
 
+> **Histórico — rascunho de design original, não é mais o schema em produção.** O schema real (banco `jogo_pi`, 14 tabelas incluindo `Itens` como catálogo separado) foi trocado pelo oficial da equipe técnica em 2026-07-30 (migração A1) — fonte de verdade em `db/setup_banco.sql`, detalhe das divergências em `roadmap_game.md` §2. Principal mudança que afeta código: `inventario.item_id` é `INT` (FK pra `Itens.id`), não `VARCHAR`; `tipo`/bônus de atributo do item vêm de `Itens`, não de `inventario` nem de constante hardcoded. **Divergência adicional (2026-08-02):** `personagens.experiencia` real é `DECIMAL(12,2)`, não `INT` como no rascunho abaixo — migrado junto do ajuste de XP por dano efetivo, ver `roadmap_game.md` §2.16.
+>
+> **Nota técnica — colunas `DECIMAL` e o driver `mysql2`:** `mysql2` retorna coluna `DECIMAL`/`NEWDECIMAL` como **string**, não `number` (a menos que `decimalNumbers: true` esteja configurado no pool — não está). Qualquer leitura de `experiencia` (ou futura coluna `DECIMAL`) que vá alimentar aritmética **precisa** passar por `Number(...)` explícito ao sair do banco, senão `+=` vira concatenação de string e degenera em `NaN`. Isso já causou um bug real (ver `roadmap_game.md` §2.16) e vai reaparecer quando o boss dividir XP proporcional (fase de loot) se qualquer leitura nova de coluna decimal esquecer a conversão.
+
 ```sql
 -- Schema Relacional do Sistema
 CREATE TABLE IF NOT EXISTS jogadores (

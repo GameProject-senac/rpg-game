@@ -88,7 +88,7 @@ CREATE TABLE personagens (
     nome VARCHAR(50) NOT NULL,
     classe VARCHAR(30) NOT NULL,
     nivel INT DEFAULT 1,
-    experiencia INT DEFAULT 0,
+    experiencia DECIMAL(12,2) NOT NULL DEFAULT 0, -- DECIMAL, não FLOAT: XP de golpe (dano×0.1) acumula sem erro de arredondamento binário
     hp_atual INT NOT NULL,
     hp_max INT NOT NULL,
     dano_base INT NOT NULL,
@@ -247,3 +247,10 @@ INSERT INTO inventario (personagem_id, item_id, quantidade, equipado) VALUES
     (SELECT id FROM Itens WHERE nome = 'escudo_improvisado'),
     1, TRUE
 );
+
+
+
+
+
+GRANT ALL PRIVILEGES ON jogo_pi.* TO 'rpg_app'@'localhost';
+FLUSH PRIVILEGES;

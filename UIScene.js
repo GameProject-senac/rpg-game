@@ -40,6 +40,11 @@ export class UIScene extends Phaser.Scene {
 
         this.statsText = this.add.text(10, 50, '', { color: '#00ff00', fontSize: '14px' }).setScrollFactor(0);
 
+        // Barra de XP (visual funcional, sem polimento — fica pra depois): fundo fixo +
+        // preenchimento redesenhado a cada stats_updated com a fração experiencia/xp_proximo_nivel.
+        this.xpBarBg = this.add.rectangle(10, 72, 200, 10, 0x333333).setOrigin(0, 0).setScrollFactor(0);
+        this.xpBarFill = this.add.rectangle(10, 72, 0, 10, 0x00ff00).setOrigin(0, 0).setScrollFactor(0);
+
         // Ícone/barra sempre visível — clique alterna a tela (mesma ação abre e fecha).
         this.toggleIcon = this.add.rectangle(10, 850, 140, 30, 0x2244aa)
             .setOrigin(0, 0).setStrokeStyle(1, 0x00ffff).setInteractive();
@@ -141,7 +146,7 @@ export class UIScene extends Phaser.Scene {
             const iconPlaceholder = this.add.rectangle(x + 6, y + 6, ICON_SIZE, ICON_SIZE, cor, 0.3)
                 .setOrigin(0, 0).setStrokeStyle(1, cor);
 
-            const nomeText = this.add.text(x + ICON_SIZE + 16, y + 5, item.item_id, { fontSize: '12px', color: '#ffffff' });
+            const nomeText = this.add.text(x + ICON_SIZE + 16, y + 5, item.nome, { fontSize: '12px', color: '#ffffff' });
             const statusText = this.add.text(x + ICON_SIZE + 16, y + 21,
                 item.equipado ? 'EQUIPADO' : 'Clique para equipar',
                 { fontSize: '10px', color: item.equipado ? '#00ff00' : '#aaaaaa' });
@@ -158,6 +163,10 @@ export class UIScene extends Phaser.Scene {
     }
 
     renderStats(stats) {
-        this.statsText.setText(`NÍVEL: ${stats.nivel}  HP: ${stats.hp_atual}/${stats.hp_max}  DANO: ${stats.dano_base}  DEF: ${stats.defesa_base}`);
+        this.statsText.setText(`NÍVEL: ${stats.nivel}  HP: ${stats.hp_atual}/${stats.hp_max}  DANO: ${stats.dano_base}  DEF: ${stats.defesa_base}  XP: ${Math.floor(stats.experiencia)}`);
+
+        // Nível máximo (xp_proximo_nivel null): barra cheia, sem divisão por zero.
+        const fracao = stats.xp_proximo_nivel ? Phaser.Math.Clamp(stats.experiencia / stats.xp_proximo_nivel, 0, 1) : 1;
+        this.xpBarFill.width = 200 * fracao;
     }
 }

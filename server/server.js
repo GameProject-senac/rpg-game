@@ -26,7 +26,7 @@ const CLASSES = {
 const BUFF_HP = 10;
 const BUFF_DANO = 5;
 const BUFF_DEFESA = 2;
-const XP_POR_INIMIGO = 50; // fase2_spec.md Apêndice A (confirmado no Pacote 2)
+const XP_POR_DANO = 0.1; // XP = dano_efetivo × esta constante, pra TODO golpe (sem pico de abate — decisão do dono, comuns)
 
 // Deriva os atributos efetivos (hp_max/dano_base/defesa_base) a partir do molde da classe + buff de nível.
 // Usado tanto no carregamento (join) quanto na subida de nível.
@@ -41,22 +41,15 @@ function calcularAtributosEfetivos(classe, nivel) {
     };
 }
 
-// Catálogo de itens. Valores arbitrários de teste (não finais). Só 'Equipamento' pode ser equipado.
-const ITENS = {
-    espada_enferrujada: { tipo: 'Equipamento', bonus_dano: 10, bonus_defesa: 0, bonus_hp: 0 },
-    escudo_improvisado: { tipo: 'Equipamento', bonus_dano: 0, bonus_defesa: 5, bonus_hp: 20 }
-};
-
-// Soma os bônus dos itens equipados de um inventário (array de linhas da tabela `inventario`).
+// Soma os bônus dos itens equipados de um inventário (array de linhas de `inventario` já
+// achatadas com o JOIN em `Itens` feito no `join` — ver server.js, handler 'join').
 function calcularBonusEquipados(inventario) {
     const bonus = { bonus_hp: 0, bonus_dano: 0, bonus_defesa: 0 };
     for (const item of inventario) {
         if (!item.equipado) continue;
-        const def = ITENS[item.item_id];
-        if (!def) continue;
-        bonus.bonus_hp += def.bonus_hp;
-        bonus.bonus_dano += def.bonus_dano;
-        bonus.bonus_defesa += def.bonus_defesa;
+        bonus.bonus_hp += item.bonus_hp;
+        bonus.bonus_dano += item.bonus_dano;
+        bonus.bonus_defesa += item.bonus_defesa;
     }
     return bonus;
 }
@@ -72,6 +65,25 @@ function recalcularAtributosEfetivos(player) {
     player.defesa_base = base.defesa_base + bonus.bonus_defesa;
 }
 
+// Tabela de nível (banco `jogo_pi`, `table_nivel`): xp_necessaria é o XP TOTAL acumulado pra
+// ESTAR naquele nível (não incremental) — ver roadmap_game.md pela análise completa. Carregada
+// uma vez no boot (tabela pequena e estática, ~21 linhas) — evita query a cada concessão de XP.
+const TABELA_NIVEL = new Map();
+async function carregarTabelaNivel() {
+    const [rows] = await pool.query('SELECT nivel, xp_necessaria FROM table_nivel');
+    for (const r of rows) TABELA_NIVEL.set(r.nivel, Number(r.xp_necessaria));
+}
+
+// Todo o bootstrap do servidor espera a tabela de nível carregar antes de abrir a porta —
+// `concederXP` depende de `TABELA_NIVEL` já populada, e a forma mais simples de garantir isso
+// sem checagem espalhada é não aceitar nenhuma conexão até o carregamento terminar.
+(async () => {
+    await carregarTabelaNivel();
+
+    iniciarServidor();
+})();
+
+function iniciarServidor() {
 const wss = new WebSocket.Server({ port: 8080 });
 console.log('🚀 Servidor WebSocket AUTORITÁRIO iniciado (Tick Rate: 20Hz)');
 
@@ -120,6 +132,41 @@ const ENEMY_HP = 50, ENEMY_DANO = 15, ENEMY_DEFESA = 2;
 const ENEMY_POPULATION_CAP = 7;
 let nextEnemySpawnPoint = 0;
 
+// Desvio de spawn (Round 2 → confirmado em campo no A2, ver roadmap_game.md): com só 4 pontos
+// fixos e teto 7, do 5º inimigo em diante o ciclo reusa coordenadas exatas de um já vivo — e o
+// ponto fixo também pode cair em cima de um jogador. ENEMY_SPAWN_CLEARANCE é o raio (px) que
+// nenhum outro ocupante (jogador OU inimigo vivo) pode estar dentro no momento do spawn.
+const ENEMY_SPAWN_CLEARANCE = 220;
+const MAP_MIN = 0, MAP_MAX = 2000; // mesmos limites do quique nas paredes (ver abaixo)
+
+// Parte do ponto-âncora (um dos 4 cantos fixos) e desvia pra fora do raio de qualquer jogador
+// ou inimigo vivo mais próximo que ENEMY_SPAWN_CLEARANCE. Um único passe pelos ocupantes —
+// suficiente pro teto de 7 inimigos e poucos jogadores simultâneos, sem virar um solver físico.
+function resolveSpawnPosition(anchor) {
+    let x = anchor.x, y = anchor.y;
+
+    const ocupantes = [
+        ...Object.values(gameState.players),
+        ...Object.values(gameState.enemies)
+    ];
+
+    for (const ocupante of ocupantes) {
+        const dx = x - ocupante.x, dy = y - ocupante.y;
+        const dist = Math.hypot(dx, dy);
+        if (dist < ENEMY_SPAWN_CLEARANCE) {
+            const angulo = dist === 0 ? Math.random() * Math.PI * 2 : Math.atan2(dy, dx);
+            const folga = ENEMY_SPAWN_CLEARANCE + Math.random() * 40;
+            x = ocupante.x + Math.cos(angulo) * folga;
+            y = ocupante.y + Math.sin(angulo) * folga;
+        }
+    }
+
+    return {
+        x: Math.min(MAP_MAX, Math.max(MAP_MIN, x)),
+        y: Math.min(MAP_MAX, Math.max(MAP_MIN, y))
+    };
+}
+
 // 1. Gerador de Inimigos (Server-side)
 function spawnEnemy(x, y, vx, vy, hp, dano, defesa) {
     const id = `enemy_${nextEnemyId++}`;
@@ -127,10 +174,11 @@ function spawnEnemy(x, y, vx, vy, hp, dano, defesa) {
     return gameState.enemies[id];
 }
 
-// População inicial: os mesmos 3 primeiros pontos fixos de sempre.
+// População inicial: os mesmos 3 primeiros pontos fixos de sempre, com desvio de spawn.
 for (let i = 0; i < 3; i++) {
     const p = ENEMY_SPAWN_POINTS[i % ENEMY_SPAWN_POINTS.length];
-    spawnEnemy(p.x, p.y, p.vx, p.vy, ENEMY_HP, ENEMY_DANO, ENEMY_DEFESA);
+    const { x, y } = resolveSpawnPosition(p);
+    spawnEnemy(x, y, p.vx, p.vy, ENEMY_HP, ENEMY_DANO, ENEMY_DEFESA);
 }
 nextEnemySpawnPoint = 3 % ENEMY_SPAWN_POINTS.length; // respawn contínuo cicla a partir daqui
 
@@ -199,7 +247,14 @@ wss.on('connection', (ws) => {
 
                 let invRows;
                 try {
-                    [invRows] = await pool.query('SELECT * FROM inventario WHERE personagem_id = ?', [requestedId]);
+                    [invRows] = await pool.query(
+                        `SELECT inventario.id, inventario.item_id, inventario.quantidade, inventario.equipado,
+                                Itens.nome, Itens.tipo, Itens.bonus_dano, Itens.bonus_defesa, Itens.bonus_hp
+                         FROM inventario
+                         JOIN Itens ON Itens.id = inventario.item_id
+                         WHERE inventario.personagem_id = ?`,
+                        [requestedId]
+                    );
                 } catch (dbErr) {
                     console.error('[join] Erro ao consultar inventário:', dbErr);
                     ws.close(4000, 'Erro ao carregar inventário');
@@ -214,7 +269,7 @@ wss.on('connection', (ws) => {
                     nome: row.nome,
                     classe: row.classe,
                     nivel: row.nivel,
-                    experiencia: row.experiencia,
+                    experiencia: Number(row.experiencia), // mysql2 retorna DECIMAL como string por padrão — sem isso, += vira concatenação (era INT antes da migração, nunca deu problema)
                     x: row.posicao_x,
                     y: row.posicao_y,
                     vx: 0, vy: 0,
@@ -252,7 +307,8 @@ wss.on('connection', (ws) => {
                     type: 'welcome',
                     id: personagemId,
                     reviveu: concederInvulnerabilidade,
-                    state: gameState
+                    state: gameState,
+                    xp_proximo_nivel: TABELA_NIVEL.get(player.nivel + 1) ?? null
                 }));
 
                 broadcast({ type: 'player_joined', player }, ws);
@@ -285,7 +341,7 @@ wss.on('connection', (ws) => {
                 const item = player.inventario.find(i => i.id === data.inventario_id);
 
                 if (!item) return; // Item não encontrado no inventário deste jogador — ignora
-                if (querEquipar && ITENS[item.item_id]?.tipo !== 'Equipamento') return; // Só Equipamento pode ser equipado
+                if (querEquipar && item.tipo !== 'Equipamento') return; // Só Equipamento pode ser equipado
 
                 item.equipado = querEquipar;
 
@@ -321,6 +377,9 @@ wss.on('connection', (ws) => {
 
                     // Servidor calcula o dano deterministicamente
                     const danoNoEnemy = Math.max(1, player.dano_base - enemy.defesa_base);
+                    // Dano efetivo: não estoura a vida restante do inimigo (XP não conta overkill).
+                    // Calculado ANTES de aplicar o dano, contra o HP que o inimigo tinha até agora.
+                    const danoEfetivo = Math.min(danoNoEnemy, enemy.hp_atual);
 
                     enemy.hp_atual -= danoNoEnemy;
                     if (!invulneravel) {
@@ -337,11 +396,15 @@ wss.on('connection', (ws) => {
                         player_hp: player.hp_atual
                     });
 
-                    // Verifica morte do Inimigo
+                    // Caminho único de XP (comuns, sem pico de abate): todo golpe, inclusive o que
+                    // mata, dá dano_efetivo × XP_POR_DANO (decisão do dono do projeto).
                     if (enemy.hp_atual <= 0) {
                         delete gameState.enemies[enemy.id];
                         broadcast({ type: 'enemy_died', enemyId: enemy.id, killerId: player.id });
-                        concederXP(player, XP_POR_INIMIGO).catch(err => console.error('[XP] Erro ao processar XP/nível:', err));
+                    }
+                    const xp = danoEfetivo * XP_POR_DANO;
+                    if (xp > 0) {
+                        concederXP(player, xp).catch(err => console.error('[XP] Erro ao processar XP/nível:', err));
                     }
                     // Verifica morte do Jogador
                     if (player.hp_atual <= 0) {
@@ -381,15 +444,28 @@ wss.on('connection', (ws) => {
 
 // Concede XP a um jogador, processa subida(s) de nível (em loop, cobrindo XP excedente)
 // e persiste nível/experiência imediatamente quando há subida. Não bloqueia o tick loop.
+// `experiencia` é XP TOTAL acumulado da carreira do personagem (nunca subtraído — table_nivel
+// guarda limiares cumulativos, não custo incremental por nível, ver roadmap_game.md).
 async function concederXP(player, quantidade) {
     player.experiencia += quantidade;
 
     let subiuNivel = false;
-    while (player.experiencia >= player.nivel * 100) {
-        player.experiencia -= player.nivel * 100;
+    let proximoCusto = TABELA_NIVEL.get(player.nivel + 1);
+    while (proximoCusto !== undefined && player.experiencia >= proximoCusto) {
         player.nivel += 1;
         subiuNivel = true;
+        proximoCusto = TABELA_NIVEL.get(player.nivel + 1);
     }
+
+    // Barra de XP (client): broadcast + filtro por personagem_id no client, mesmo padrão de
+    // stats_updated/inventory_update — mais simples que carregar `ws` até aqui só pra isso.
+    broadcast({
+        type: 'xp_update',
+        personagem_id: player.id,
+        experiencia: player.experiencia,
+        nivel: player.nivel,
+        xp_proximo_nivel: TABELA_NIVEL.get(player.nivel + 1) ?? null
+    });
 
     if (!subiuNivel) return;
 
@@ -446,15 +522,18 @@ setInterval(() => {
 }, TICK_RATE);
 
 // ────────────────────────────────────────────────────────
-// SNAPSHOT PERIÓDICO (Pacote 2 — grava posição/HP a cada ~10s, sem bloquear o tick de 20Hz)
+// SNAPSHOT PERIÓDICO (Pacote 2 — grava posição/HP/XP a cada ~10s, sem bloquear o tick de 20Hz)
+// `experiencia` entrou aqui junto (novo modelo de XP): com XP de bater, `experiencia` muda a
+// cada pancada que não mata, não só em subida de nível — sem isso, XP de bater ficaria exposto
+// a perda numa queda não-graciosa do processo entre snapshots.
 // ────────────────────────────────────────────────────────
 const SNAPSHOT_INTERVAL = 10000;
 setInterval(() => {
     for (const id in gameState.players) {
         const p = gameState.players[id];
         pool.query(
-            'UPDATE personagens SET posicao_x = ?, posicao_y = ?, hp_atual = ? WHERE id = ?',
-            [p.x, p.y, p.hp_atual, p.id]
+            'UPDATE personagens SET posicao_x = ?, posicao_y = ?, hp_atual = ?, experiencia = ? WHERE id = ?',
+            [p.x, p.y, p.hp_atual, p.experiencia, p.id]
         ).catch(err => console.error(`[snapshot] Erro ao gravar personagem ${p.id}:`, err));
     }
 }, SNAPSHOT_INTERVAL);
@@ -466,12 +545,17 @@ setInterval(() => {
 // ────────────────────────────────────────────────────────
 const ENEMY_RESPAWN_INTERVAL = 10000;
 setInterval(() => {
+    // Guard auto-corrigente (sem start/stop dinâmico do interval): mapa vazio de jogadores
+    // vira no-op no tick, sem estado próprio pra desincronizar dos vários caminhos de
+    // entrada/saída (join, morte em attack_enemy, ws.close).
+    if (Object.keys(gameState.players).length === 0) return;
     if (Object.keys(gameState.enemies).length >= ENEMY_POPULATION_CAP) return;
 
     const p = ENEMY_SPAWN_POINTS[nextEnemySpawnPoint % ENEMY_SPAWN_POINTS.length];
     nextEnemySpawnPoint++;
 
-    const enemy = spawnEnemy(p.x, p.y, p.vx, p.vy, ENEMY_HP, ENEMY_DANO, ENEMY_DEFESA);
+    const { x, y } = resolveSpawnPosition(p);
+    const enemy = spawnEnemy(x, y, p.vx, p.vy, ENEMY_HP, ENEMY_DANO, ENEMY_DEFESA);
 
     // state_update só atualiza posição de inimigos que o client já conhece, então um inimigo
     // novo precisa de aviso próprio.
@@ -484,3 +568,5 @@ function broadcast(data, excludeWs = null) {
         if (client !== excludeWs && client.readyState === WebSocket.OPEN) client.send(payload);
     });
 }
+
+} // fecha iniciarServidor()
