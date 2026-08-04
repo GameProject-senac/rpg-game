@@ -5,6 +5,17 @@
 
 import { SERVER_URL, sendMessage } from './networkConfig.js';
 
+// Loot & Inimigos, Passo 1d — DEBUG VISUAL, não arte final: cor sólida por tipo
+// (mobs.nome_inimigo) só pra identificar em teste. Some quando o sprite Godot chegar.
+// Fallback cobre qualquer nome fora do mapa (tipo novo no banco que ainda não foi mapeado aqui).
+const ENEMY_COLOR_BY_NOME = {
+    'Comum': 0x888888, // cinza
+    'Fraco': 0x00cc44, // verde
+    'Medio': 0xffaa00, // amarelo/laranja
+    'Forte': 0xff0000  // vermelho
+};
+const ENEMY_COLOR_FALLBACK = 0xffffff;
+
 export class ExploracaoCombate extends Phaser.Scene {
 
     constructor() {
@@ -98,7 +109,7 @@ export class ExploracaoCombate extends Phaser.Scene {
             this.game.events.off('inventory_action', this.onInventoryAction);
             this.scene.stop('UIScene');
             this.playerHpGraphics.destroy();
-            this.enemyData.forEach(data => data.hpGraphics.destroy());
+            this.enemyData.forEach(data => { data.hpGraphics.destroy(); data.nameText.destroy(); });
             this.otherPlayers.forEach(rp => rp.hpGraphics.destroy());
             if (this.socket) this.socket.close();
         });
@@ -223,6 +234,7 @@ export class ExploracaoCombate extends Phaser.Scene {
         if (this.enemyData.has(data.enemyId)) {
             const e = this.enemyData.get(data.enemyId);
             e.hpGraphics.destroy();
+            e.nameText.destroy();
             e.sprite.destroy();
             this.enemyData.delete(data.enemyId);
         }
@@ -341,14 +353,17 @@ export class ExploracaoCombate extends Phaser.Scene {
     }
 
     spawnEnemy(state) {
-        const sprite = this.add.rectangle(state.x, state.y, 30, 30, 0xff0000);
+        const cor = ENEMY_COLOR_BY_NOME[state.nome] ?? ENEMY_COLOR_FALLBACK;
+        const sprite = this.add.rectangle(state.x, state.y, 30, 30, cor);
         this.physics.add.existing(sprite);
         sprite.body.setImmovable(true); // O Cliente não empurra fisicamente o inimigo
         sprite.serverId = state.id;
         this.enemiesGroup.add(sprite);
+        const nameText = this.add.text(state.x, state.y - 40, state.nome ?? '', { color: '#ffffff', fontSize: '12px' }).setOrigin(0.5);
         this.enemyData.set(state.id, {
             sprite: sprite, targetX: state.x, targetY: state.y,
-            hp_atual: state.hp_atual, hp_max: state.hp_max, hpGraphics: this.add.graphics()
+            hp_atual: state.hp_atual, hp_max: state.hp_max, hpGraphics: this.add.graphics(),
+            nameText: nameText
         });
     }
 
@@ -384,6 +399,7 @@ export class ExploracaoCombate extends Phaser.Scene {
             }
             
             this.drawHpBar(e.hpGraphics, e.sprite.x, e.sprite.y - 25, e.hp_atual, e.hp_max, 30);
+            e.nameText.setPosition(e.sprite.x, e.sprite.y - 40);
         });
 
         // 4. Interpola Jogadores Remotos e Renderiza HP

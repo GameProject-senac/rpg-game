@@ -1,0 +1,62 @@
+[DEBUG-TEMP][MOBS_TIPOS] length=4 [
+  {
+    nome: 'Comum',
+    vida: 50,
+    ataque: 15,
+    defesa: 2,
+    xp_multiplicador: 1,
+    nivel: 1
+  },
+  {
+    nome: 'Fraco',
+    vida: 70,
+    ataque: 18,
+    defesa: 3,
+    xp_multiplicador: 1.3,
+    nivel: 1
+  },
+  {
+    nome: 'Medio',
+    vida: 100,
+    ataque: 22,
+    defesa: 4,
+    xp_multiplicador: 1.6,
+    nivel: 1
+  },
+  {
+    nome: 'Forte',
+    vida: 140,
+    ataque: 28,
+    defesa: 6,
+    xp_multiplicador: 2,
+    nivel: 1
+  }
+]
+🚀 Servidor WebSocket AUTORITÁRIO iniciado (Tick Rate: 20Hz)
+[DEBUG-TEMP][SPAWN] id=enemy_1 tipo=Medio vida=100 mult=1.6
+[DEBUG-TEMP][SPAWN] id=enemy_2 tipo=Fraco vida=70 mult=1.3
+[DEBUG-TEMP][SPAWN] id=enemy_3 tipo=Comum vida=50 mult=1
+[+] Conexão WebSocket estabelecida (aguardando join)
+[+] Personagem 5 (Tanque Teste, tanque, nível 1) entrou.
+[DEBUG-TEMP][XP] enemyId=enemy_1 nome=Medio danoEfetivo=11 mult=1.6 (typeof number) xp_golpe=1.7600000000000002
+[DEBUG-TEMP][XP] enemyId=enemy_2 nome=Fraco danoEfetivo=12 mult=1.3 (typeof number) xp_golpe=1.5600000000000003
+[DEBUG-TEMP][XP] enemyId=enemy_3 nome=Comum danoEfetivo=13 mult=1 (typeof number) xp_golpe=1.3
+[DEBUG-TEMP][XP] enemyId=enemy_1 nome=Medio danoEfetivo=11 mult=1.6 (typeof number) xp_golpe=1.7600000000000002
+[DEBUG-TEMP][XP] enemyId=enemy_2 nome=Fraco danoEfetivo=12 mult=1.3 (typeof number) xp_golpe=1.5600000000000003
+[DEBUG-TEMP][XP] enemyId=enemy_3 nome=Comum danoEfetivo=13 mult=1 (typeof number) xp_golpe=1.3
+[DEBUG-TEMP][XP] enemyId=enemy_1 nome=Medio danoEfetivo=11 mult=1.6 (typeof number) xp_golpe=1.7600000000000002
+[DEBUG-TEMP][XP] enemyId=enemy_2 nome=Fraco danoEfetivo=12 mult=1.3 (typeof number) xp_golpe=1.5600000000000003
+[DEBUG-TEMP][XP] enemyId=enemy_3 nome=Comum danoEfetivo=13 mult=1 (typeof number) xp_golpe=1.3
+[DEBUG-TEMP][XP] enemyId=enemy_1 nome=Medio danoEfetivo=11 mult=1.6 (typeof number) xp_golpe=1.7600000000000002
+[DEBUG-TEMP][XP] enemyId=enemy_2 nome=Fraco danoEfetivo=12 mult=1.3 (typeof number) xp_golpe=1.5600000000000003
+[DEBUG-TEMP][XP] enemyId=enemy_3 nome=Comum danoEfetivo=11 mult=1 (typeof number) xp_golpe=1.1
+[DEBUG-TEMP][XP] enemyId=enemy_1 nome=Medio danoEfetivo=11 mult=1.6 (typeof number) xp_golpe=1.7600000000000002
+[-] Conexão encerrada antes de qualquer join (ou já liberada por morte).
+[+] Conexão WebSocket estabelecida (aguardando join)
+[+] Personagem 5 (Tanque Teste, tanque, nível 1) entrou. (hp_atual curado) (invulnerabilidade de respawn concedida)
+[DEBUG-TEMP][SPAWN] id=enemy_4 tipo=Medio vida=100 mult=1.6
+[DEBUG-TEMP][SPAWN] id=enemy_5 tipo=Comum vida=50 mult=1
+[DEBUG-TEMP][SPAWN] id=enemy_6 tipo=Medio vida=100 mult=1.6
+[DEBUG-TEMP][SPAWN] id=enemy_7 tipo=Medio vida=100 mult=1.6
+[DEBUG-TEMP][SPAWN] id=enemy_8 tipo=Forte vida=140 mult=2
+[-] Personagem Desconectado: 5

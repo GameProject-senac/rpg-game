@@ -74,11 +74,39 @@ async function carregarTabelaNivel() {
     for (const r of rows) TABELA_NIVEL.set(r.nivel, Number(r.xp_necessaria));
 }
 
-// Todo o bootstrap do servidor espera a tabela de nível carregar antes de abrir a porta —
-// `concederXP` depende de `TABELA_NIVEL` já populada, e a forma mais simples de garantir isso
-// sem checagem espalhada é não aceitar nenhuma conexão até o carregamento terminar.
+// Tipos de mob (banco `jogo_pi`, `mobs`, Loot & Inimigos Passo 1b): mesmo padrão de
+// carregamento único no boot que TABELA_NIVEL — tabela pequena e estática, evita query a cada
+// spawn. experiencia_dropada é DECIMAL(4,2) e o mysql2 devolve DECIMAL como STRING, não number —
+// Number(...) aqui é obrigatório, senão o multiplicador de XP do Passo 1c vira concatenação/NaN
+// (mesmo bug já visto em personagens.experiencia).
+const MOBS_TIPOS = [];
+async function carregarMobsTipos() {
+    const [rows] = await pool.query('SELECT nome_inimigo, vida, ataque, defesa, experiencia_dropada, nivel FROM mobs');
+    for (const r of rows) {
+        MOBS_TIPOS.push({
+            nome: r.nome_inimigo,
+            vida: r.vida,
+            ataque: r.ataque,
+            defesa: r.defesa,
+            xp_multiplicador: Number(r.experiencia_dropada),
+            nivel: r.nivel
+        });
+    }
+}
+
+// Sorteio uniforme entre os tipos carregados. Temporário (Passo 1b) — vira desbloqueio
+// progressivo por nível/área numa fase futura.
+function sortearTipoMob() {
+    return MOBS_TIPOS[Math.floor(Math.random() * MOBS_TIPOS.length)];
+}
+
+// Todo o bootstrap do servidor espera a tabela de nível e os tipos de mob carregarem antes de
+// abrir a porta — `concederXP` depende de `TABELA_NIVEL` e o spawn depende de `MOBS_TIPOS`, e a
+// forma mais simples de garantir isso sem checagem espalhada é não aceitar nenhuma conexão até o
+// carregamento terminar.
 (async () => {
     await carregarTabelaNivel();
+    await carregarMobsTipos();
 
     iniciarServidor();
 })();
@@ -128,6 +156,9 @@ const ENEMY_SPAWN_POINTS = [
     { x: 200, y: 1800, vx: 200, vy: -150 },
     { x: 1800, y: 200, vx: -150, vy: 200 }
 ];
+// órfãs pós-1b (Loot & Inimigos): spawnEnemy passou a receber o tipo sorteado de MOBS_TIPOS em
+// vez destes 3 números fixos. Mantidas sem uso até o Passo 1b ser validado em campo — remover
+// depois.
 const ENEMY_HP = 50, ENEMY_DANO = 15, ENEMY_DEFESA = 2;
 const ENEMY_POPULATION_CAP = 7;
 let nextEnemySpawnPoint = 0;
@@ -167,10 +198,17 @@ function resolveSpawnPosition(anchor) {
     };
 }
 
-// 1. Gerador de Inimigos (Server-side)
-function spawnEnemy(x, y, vx, vy, hp, dano, defesa) {
+// 1. Gerador de Inimigos (Server-side) — recebe o tipo sorteado (MOBS_TIPOS via sortearTipoMob),
+// não mais hp/dano/defesa soltos. nome e xp_multiplicador acompanham o inimigo pro Passo 1c (XP
+// por tipo) e 1d (client exibir); xp_multiplicador ainda não é lido em lugar nenhum.
+function spawnEnemy(x, y, vx, vy, tipo) {
     const id = `enemy_${nextEnemyId++}`;
-    gameState.enemies[id] = { id, x, y, vx, vy, hp_atual: hp, hp_max: hp, dano_base: dano, defesa_base: defesa };
+    gameState.enemies[id] = {
+        id, x, y, vx, vy,
+        hp_atual: tipo.vida, hp_max: tipo.vida,
+        dano_base: tipo.ataque, defesa_base: tipo.defesa,
+        nome: tipo.nome, xp_multiplicador: tipo.xp_multiplicador
+    };
     return gameState.enemies[id];
 }
 
@@ -178,7 +216,7 @@ function spawnEnemy(x, y, vx, vy, hp, dano, defesa) {
 for (let i = 0; i < 3; i++) {
     const p = ENEMY_SPAWN_POINTS[i % ENEMY_SPAWN_POINTS.length];
     const { x, y } = resolveSpawnPosition(p);
-    spawnEnemy(x, y, p.vx, p.vy, ENEMY_HP, ENEMY_DANO, ENEMY_DEFESA);
+    spawnEnemy(x, y, p.vx, p.vy, sortearTipoMob());
 }
 nextEnemySpawnPoint = 3 % ENEMY_SPAWN_POINTS.length; // respawn contínuo cicla a partir daqui
 
@@ -396,13 +434,16 @@ wss.on('connection', (ws) => {
                         player_hp: player.hp_atual
                     });
 
-                    // Caminho único de XP (comuns, sem pico de abate): todo golpe, inclusive o que
-                    // mata, dá dano_efetivo × XP_POR_DANO (decisão do dono do projeto).
+                    // Caminho único de XP (sem pico de abate): todo golpe, inclusive o que mata, dá
+                    // dano_efetivo × XP_POR_DANO × xp_multiplicador do TIPO do inimigo atingido
+                    // (Loot & Inimigos, Passo 1c — decisão do dono do projeto). enemy.xp_multiplicador
+                    // já chega como Number (convertido de DECIMAL no carregarMobsTipos do Passo 1b,
+                    // única origem do campo — não há caminho onde ele seja string aqui).
                     if (enemy.hp_atual <= 0) {
                         delete gameState.enemies[enemy.id];
                         broadcast({ type: 'enemy_died', enemyId: enemy.id, killerId: player.id });
                     }
-                    const xp = danoEfetivo * XP_POR_DANO;
+                    const xp = danoEfetivo * XP_POR_DANO * enemy.xp_multiplicador;
                     if (xp > 0) {
                         concederXP(player, xp).catch(err => console.error('[XP] Erro ao processar XP/nível:', err));
                     }
@@ -555,7 +596,7 @@ setInterval(() => {
     nextEnemySpawnPoint++;
 
     const { x, y } = resolveSpawnPosition(p);
-    const enemy = spawnEnemy(x, y, p.vx, p.vy, ENEMY_HP, ENEMY_DANO, ENEMY_DEFESA);
+    const enemy = spawnEnemy(x, y, p.vx, p.vy, sortearTipoMob());
 
     // state_update só atualiza posição de inimigos que o client já conhece, então um inimigo
     // novo precisa de aviso próprio.

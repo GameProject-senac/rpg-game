@@ -64,7 +64,19 @@ CREATE TABLE mobs (
     vida INT NOT NULL,
     defesa INT DEFAULT 0,
     ataque INT DEFAULT 0,
-    experiencia_dropada INT DEFAULT 0,
+    -- experiencia_dropada é DECIMAL, não INT (decisão do dono do projeto,
+    -- Loot & Inimigos Passo 1a): passou a ser o MULTIPLICADOR de XP do tipo
+    -- de mob (XP = dano_efetivo × 0.1 × experiencia_dropada, ver Passo 1c),
+    -- não um valor fixo de XP por abate — por isso precisa de casas decimais
+    -- (1.3, 1.6...). DECIMAL(4,2) cobre 0.00–99.99, sobra pra multiplicadores
+    -- de boss bem acima de 1.0.
+    --
+    -- ⚠️ Aviso pro Passo 1c: mysql2 devolve coluna DECIMAL como STRING, não
+    -- number (mesmo gotcha já visto em personagens.experiencia, ver AGENTS.md
+    -- §07). Qualquer leitura de experiencia_dropada que alimente a conta de
+    -- XP precisa de Number(...) explícito antes de multiplicar, senão vira
+    -- concatenação de string / NaN.
+    experiencia_dropada DECIMAL(4,2) DEFAULT 0.00,
     nivel INT DEFAULT 1
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
@@ -219,6 +231,17 @@ INSERT INTO table_nivel (nivel, xp_necessaria) VALUES
 INSERT INTO Itens (nome, descricao, localizacao, chance, tipo, bonus_dano, bonus_defesa, bonus_hp) VALUES
 ('espada_enferrujada', 'Espada enferrujada de treino', NULL, 1.0, 'Equipamento', 10, 0, 0),
 ('escudo_improvisado', 'Escudo improvisado de treino', NULL, 1.0, 'Equipamento', 0, 5, 20);
+
+-- mobs: 4 tipos de teste (Loot & Inimigos, Passo 1a — valores provisórios do
+-- dono do projeto). 'Comum' reproduz o inimigo hardcoded de hoje
+-- (ENEMY_HP=50/DANO=15/DEFESA=2 em server.js); os outros 3 são novos.
+-- experiencia_dropada aqui é multiplicador de XP, não XP fixo (ver comentário
+-- na CREATE TABLE mobs acima) — consumido só a partir do Passo 1c.
+INSERT INTO mobs (nome_inimigo, vida, defesa, ataque, experiencia_dropada, nivel) VALUES
+('Comum', 50, 2, 15, 1.0, 1),
+('Fraco', 70, 3, 18, 1.3, 1),
+('Medio', 100, 4, 22, 1.6, 1),
+('Forte', 140, 6, 28, 2.0, 1);
 
 -- jogadores: 1 jogador de teste
 INSERT INTO jogadores (Nome, email, Senha, roles, is_active) VALUES
