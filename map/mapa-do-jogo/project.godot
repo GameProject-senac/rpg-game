@@ -1,0 +1,30 @@
+; Engine configuration file.
+; It's best edited using the editor UI and not directly,
+; since the parameters that go here are not all obvious.
+;
+; Format:
+;   [section] ; section goes between []
+;   param=value ; assign values to parameters
+
+config_version=5
+
+[application]
+
+config/name="mapa do jogo"
+run/main_scene="uid://bqib55sxevp0n"
+config/features=PackedStringArray("4.6", "Forward Plus")
+
+[physics]
+
+3d/physics_engine="Jolt Physics"
+
+[rendering]
+
+textures/canvas_textures/default_texture_filter=0
+rendering_device/driver.windows="d3d12"
+viewport/hdr_2d=true
+anti_aliasing/quality/msaa_2d=3
+anti_aliasing/quality/msaa_3d=3
+anti_aliasing/quality/screen_space_aa=2
+anti_aliasing/quality/use_taa=true
+2d/snap/snap_2d_transforms_to_pixel=true
