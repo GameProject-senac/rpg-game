@@ -165,10 +165,6 @@ const ENEMY_SPAWN_POINTS = [
     { x: 200, y: 1800, vx: 200, vy: -150 },
     { x: 1800, y: 200, vx: -150, vy: 200 }
 ];
-// órfãs pós-1b (Loot & Inimigos): spawnEnemy passou a receber o tipo sorteado de MOBS_TIPOS em
-// vez destes 3 números fixos. Mantidas sem uso até o Passo 1b ser validado em campo — remover
-// depois.
-const ENEMY_HP = 50, ENEMY_DANO = 15, ENEMY_DEFESA = 2;
 const ENEMY_POPULATION_CAP = 7;
 let nextEnemySpawnPoint = 0;
 

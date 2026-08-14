@@ -238,8 +238,8 @@ INSERT INTO Itens (nome, descricao, localizacao, chance, tipo, bonus_dano, bonus
 ('escudo_improvisado', 'Escudo improvisado de treino', NULL, 1.0, 'Equipamento', 0, 5, 20);
 
 -- mobs: 5 tipos de teste (Loot & Inimigos, Passo 1a + Passo 2a — valores
--- provisórios do dono do projeto). 'Comum' reproduz o inimigo hardcoded de
--- hoje (ENEMY_HP=50/DANO=15/DEFESA=2 em server.js); 'Elite' é o boss/raro
+-- provisórios do dono do projeto). 'Comum' é 50hp/15atk/2def, o baseline
+-- original do inimigo único de antes do Passo 1; 'Elite' é o boss/raro
 -- do Passo 2 (mais durão, XP alto, peso_spawn baixo = raro).
 -- experiencia_dropada aqui é multiplicador de XP, não XP fixo (ver comentário
 -- na CREATE TABLE mobs acima) — consumido só a partir do Passo 1c.
