@@ -74,14 +74,15 @@ async function carregarTabelaNivel() {
     for (const r of rows) TABELA_NIVEL.set(r.nivel, Number(r.xp_necessaria));
 }
 
-// Tipos de mob (banco `jogo_pi`, `mobs`, Loot & Inimigos Passo 1b): mesmo padrão de
-// carregamento único no boot que TABELA_NIVEL — tabela pequena e estática, evita query a cada
-// spawn. experiencia_dropada é DECIMAL(4,2) e o mysql2 devolve DECIMAL como STRING, não number —
-// Number(...) aqui é obrigatório, senão o multiplicador de XP do Passo 1c vira concatenação/NaN
-// (mesmo bug já visto em personagens.experiencia).
+// Tipos de mob (banco `jogo_pi`, `mobs`, Loot & Inimigos Passo 1b, peso_spawn desde o Passo 2a):
+// mesmo padrão de carregamento único no boot que TABELA_NIVEL — tabela pequena e estática, evita
+// query a cada spawn. experiencia_dropada é DECIMAL(4,2) e o mysql2 devolve DECIMAL como STRING,
+// não number — Number(...) aqui é obrigatório, senão o multiplicador de XP do Passo 1c vira
+// concatenação/NaN (mesmo bug já visto em personagens.experiencia). peso_spawn é INT — chega como
+// number sem precisar de Number(...), confirmado no carregamento (Passo 2b).
 const MOBS_TIPOS = [];
 async function carregarMobsTipos() {
-    const [rows] = await pool.query('SELECT nome_inimigo, vida, ataque, defesa, experiencia_dropada, nivel FROM mobs');
+    const [rows] = await pool.query('SELECT nome_inimigo, vida, ataque, defesa, experiencia_dropada, nivel, peso_spawn FROM mobs');
     for (const r of rows) {
         MOBS_TIPOS.push({
             nome: r.nome_inimigo,
@@ -89,15 +90,23 @@ async function carregarMobsTipos() {
             ataque: r.ataque,
             defesa: r.defesa,
             xp_multiplicador: Number(r.experiencia_dropada),
-            nivel: r.nivel
+            nivel: r.nivel,
+            peso_spawn: r.peso_spawn
         });
     }
 }
 
-// Sorteio uniforme entre os tipos carregados. Temporário (Passo 1b) — vira desbloqueio
-// progressivo por nível/área numa fase futura.
+// Sorteio ponderado por peso_spawn (Passo 2b): soma os pesos de todos os tipos, sorteia um
+// número de 0 até a soma, e percorre acumulando peso até cruzar o número sorteado — o tipo
+// onde cruza é o escolhido. Tipos com peso maior saem mais (Comum), o Elite (peso baixo) é raro.
 function sortearTipoMob() {
-    return MOBS_TIPOS[Math.floor(Math.random() * MOBS_TIPOS.length)];
+    const pesoTotal = MOBS_TIPOS.reduce((soma, tipo) => soma + tipo.peso_spawn, 0);
+    let sorteio = Math.random() * pesoTotal;
+    for (const tipo of MOBS_TIPOS) {
+        sorteio -= tipo.peso_spawn;
+        if (sorteio < 0) return tipo;
+    }
+    return MOBS_TIPOS[MOBS_TIPOS.length - 1];
 }
 
 // Todo o bootstrap do servidor espera a tabela de nível e os tipos de mob carregarem antes de

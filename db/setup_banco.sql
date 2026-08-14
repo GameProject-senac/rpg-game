@@ -77,7 +77,12 @@ CREATE TABLE mobs (
     -- XP precisa de Number(...) explícito antes de multiplicar, senão vira
     -- concatenação de string / NaN.
     experiencia_dropada DECIMAL(4,2) DEFAULT 0.00,
-    nivel INT DEFAULT 1
+    nivel INT DEFAULT 1,
+    -- peso_spawn: Loot & Inimigos Passo 2a. Peso relativo de sorteio (maior =
+    -- mais frequente); consumido pelo sorteio ponderado do Passo 2b. Fica no
+    -- banco porque raridade é balanceamento que a equipe calibra, não algo
+    -- hardcoded no jogo.
+    peso_spawn INT NOT NULL DEFAULT 10 COMMENT 'Peso relativo de sorteio (maior = mais frequente). Elite baixo = raro.'
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE skills (
@@ -232,16 +237,20 @@ INSERT INTO Itens (nome, descricao, localizacao, chance, tipo, bonus_dano, bonus
 ('espada_enferrujada', 'Espada enferrujada de treino', NULL, 1.0, 'Equipamento', 10, 0, 0),
 ('escudo_improvisado', 'Escudo improvisado de treino', NULL, 1.0, 'Equipamento', 0, 5, 20);
 
--- mobs: 4 tipos de teste (Loot & Inimigos, Passo 1a — valores provisórios do
--- dono do projeto). 'Comum' reproduz o inimigo hardcoded de hoje
--- (ENEMY_HP=50/DANO=15/DEFESA=2 em server.js); os outros 3 são novos.
+-- mobs: 5 tipos de teste (Loot & Inimigos, Passo 1a + Passo 2a — valores
+-- provisórios do dono do projeto). 'Comum' reproduz o inimigo hardcoded de
+-- hoje (ENEMY_HP=50/DANO=15/DEFESA=2 em server.js); 'Elite' é o boss/raro
+-- do Passo 2 (mais durão, XP alto, peso_spawn baixo = raro).
 -- experiencia_dropada aqui é multiplicador de XP, não XP fixo (ver comentário
 -- na CREATE TABLE mobs acima) — consumido só a partir do Passo 1c.
-INSERT INTO mobs (nome_inimigo, vida, defesa, ataque, experiencia_dropada, nivel) VALUES
-('Comum', 50, 2, 15, 1.0, 1),
-('Fraco', 70, 3, 18, 1.3, 1),
-('Medio', 100, 4, 22, 1.6, 1),
-('Forte', 140, 6, 28, 2.0, 1);
+-- peso_spawn é o peso relativo do sorteio ponderado (Passo 2b); peso total
+-- dos 5 tipos = 95, Elite = ~5% de chance.
+INSERT INTO mobs (nome_inimigo, vida, defesa, ataque, experiencia_dropada, nivel, peso_spawn) VALUES
+('Comum', 50, 2, 15, 1.0, 1, 30),
+('Fraco', 70, 3, 18, 1.3, 1, 25),
+('Medio', 100, 4, 22, 1.6, 1, 20),
+('Forte', 140, 6, 28, 2.0, 1, 15),
+('Elite', 250, 10, 40, 3.5, 1, 5);
 
 -- jogadores: 1 jogador de teste
 INSERT INTO jogadores (Nome, email, Senha, roles, is_active) VALUES

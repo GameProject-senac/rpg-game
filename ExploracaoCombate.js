@@ -5,14 +5,16 @@
 
 import { SERVER_URL, sendMessage } from './networkConfig.js';
 
-// Loot & Inimigos, Passo 1d — DEBUG VISUAL, não arte final: cor sólida por tipo
-// (mobs.nome_inimigo) só pra identificar em teste. Some quando o sprite Godot chegar.
-// Fallback cobre qualquer nome fora do mapa (tipo novo no banco que ainda não foi mapeado aqui).
+// Loot & Inimigos, Passo 1d (Elite roxo adicionado no Passo 2c) — DEBUG VISUAL, não arte final:
+// cor sólida por tipo (mobs.nome_inimigo) só pra identificar em teste. Some quando o sprite Godot
+// chegar. Fallback cobre qualquer nome fora do mapa (tipo novo no banco que ainda não foi mapeado
+// aqui).
 const ENEMY_COLOR_BY_NOME = {
     'Comum': 0x888888, // cinza
     'Fraco': 0x00cc44, // verde
     'Medio': 0xffaa00, // amarelo/laranja
-    'Forte': 0xff0000  // vermelho
+    'Forte': 0xff0000, // vermelho
+    'Elite': 0x9900ff  // roxo — raro (peso_spawn baixo, Passo 2a), mais durão e mais XP
 };
 const ENEMY_COLOR_FALLBACK = 0xffffff;
 
