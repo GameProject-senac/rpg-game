@@ -12,7 +12,7 @@ config_version=5
 
 config/name="mapa do jogo"
 run/main_scene="uid://bqib55sxevp0n"
-config/features=PackedStringArray("4.6", "Forward Plus")
+config/features=PackedStringArray("4.7", "Forward Plus")
 
 [physics]
 
