@@ -82,9 +82,10 @@ async function carregarTabelaNivel() {
 // number sem precisar de Number(...), confirmado no carregamento (Passo 2b).
 const MOBS_TIPOS = [];
 async function carregarMobsTipos() {
-    const [rows] = await pool.query('SELECT nome_inimigo, vida, ataque, defesa, experiencia_dropada, nivel, peso_spawn FROM mobs');
+    const [rows] = await pool.query('SELECT id, nome_inimigo, vida, ataque, defesa, experiencia_dropada, nivel, peso_spawn FROM mobs');
     for (const r of rows) {
         MOBS_TIPOS.push({
+            mob_id: r.id,
             nome: r.nome_inimigo,
             vida: r.vida,
             ataque: r.ataque,
@@ -94,6 +95,39 @@ async function carregarMobsTipos() {
             peso_spawn: r.peso_spawn
         });
     }
+}
+
+// Drops por mob (banco `jogo_pi`, `mob_drops`, Loot & Inimigos Passo 4b): mesmo padrão de
+// carregamento único no boot que TABELA_NIVEL/MOBS_TIPOS — tabela pequena e estática, evita
+// query a cada morte de inimigo (frequente). Chave = mob_id (o TIPO, não a instância), valor =
+// lista de linhas de drop daquele tipo. chance_drop é FLOAT e quantidade_min/max são INT — ambos
+// chegam do mysql2 como number nativo, sem precisar de Number(...) (diferente do DECIMAL de
+// experiencia_dropada acima), confirmado no carregamento do Passo 4a.
+const MOB_DROPS = new Map();
+async function carregarMobDrops() {
+    const [rows] = await pool.query('SELECT mob_id, item_id, quantidade_min, quantidade_max, chance_drop FROM mob_drops');
+    for (const r of rows) {
+        if (!MOB_DROPS.has(r.mob_id)) MOB_DROPS.set(r.mob_id, []);
+        MOB_DROPS.get(r.mob_id).push(r);
+    }
+}
+
+// Decide o que um mob dropou na morte (Passo 4b): cada linha de drop do tipo rola sua própria
+// chance, independente das outras (por isso Elite pode dropar espada E escudo). Quantidade
+// sorteada dentro da faixa [quantidade_min, quantidade_max] — hoje sempre 1, mas a faixa é
+// respeitada pra quando houver drops com quantidade variável. Só DECIDE o que dropou — não dá
+// destino ao item (aparecer no mapa/coleta é o Passo 5, fora deste escopo).
+function rolarDrops(mob_id) {
+    const drops = MOB_DROPS.get(mob_id) ?? [];
+    const resultado = [];
+    for (const drop of drops) {
+        if (Math.random() < drop.chance_drop) {
+            const quantidade = drop.quantidade_min +
+                Math.floor(Math.random() * (drop.quantidade_max - drop.quantidade_min + 1));
+            resultado.push({ item_id: drop.item_id, quantidade });
+        }
+    }
+    return resultado;
 }
 
 // Sorteio ponderado por peso_spawn (Passo 2b): soma os pesos de todos os tipos, sorteia um
@@ -116,6 +150,7 @@ function sortearTipoMob() {
 (async () => {
     await carregarTabelaNivel();
     await carregarMobsTipos();
+    await carregarMobDrops();
 
     iniciarServidor();
 })();
@@ -206,13 +241,16 @@ function resolveSpawnPosition(anchor) {
 // 1. Gerador de Inimigos (Server-side) — recebe o tipo sorteado (MOBS_TIPOS via sortearTipoMob),
 // não mais hp/dano/defesa soltos. nome e xp_multiplicador acompanham o inimigo pro Passo 1c (XP
 // por tipo) e 1d (client exibir); xp_multiplicador ainda não é lido em lugar nenhum.
+// mob_id (Loot & Inimigos, Passo 4a) é o id da linha em mobs (o TIPO) — não confundir com `id`
+// acima, que é o id da INSTÂNCIA no gameState (ex.: "enemy_1"). mob_drops liga por mob_id.
 function spawnEnemy(x, y, vx, vy, tipo) {
     const id = `enemy_${nextEnemyId++}`;
     gameState.enemies[id] = {
         id, x, y, vx, vy,
         hp_atual: tipo.vida, hp_max: tipo.vida,
         dano_base: tipo.ataque, defesa_base: tipo.defesa,
-        nome: tipo.nome, xp_multiplicador: tipo.xp_multiplicador
+        nome: tipo.nome, xp_multiplicador: tipo.xp_multiplicador,
+        mob_id: tipo.mob_id
     };
     return gameState.enemies[id];
 }
@@ -447,6 +485,17 @@ wss.on('connection', (ws) => {
                     if (enemy.hp_atual <= 0) {
                         delete gameState.enemies[enemy.id];
                         broadcast({ type: 'enemy_died', enemyId: enemy.id, killerId: player.id });
+
+                        // Loot (Passo 4b): só DECIDE e loga — item não aparece no mapa/coletável
+                        // ainda (Passo 5). enemy.mob_id é o id do TIPO (tabela mobs), não confundir
+                        // com enemy.id (id da instância, ex. "enemy_1").
+                        const dropsObtidos = rolarDrops(enemy.mob_id);
+                        if (dropsObtidos.length > 0) {
+                            const resumo = dropsObtidos.map(d => `item_id=${d.item_id} x${d.quantidade}`).join(', ');
+                            console.log(`[LOOT] enemy ${enemy.nome} (mob_id=${enemy.mob_id}) dropou: ${resumo}`);
+                        } else {
+                            console.log(`[LOOT] enemy ${enemy.nome} (mob_id=${enemy.mob_id}) não dropou nada`);
+                        }
                     }
                     const xp = danoEfetivo * XP_POR_DANO * enemy.xp_multiplicador;
                     if (xp > 0) {

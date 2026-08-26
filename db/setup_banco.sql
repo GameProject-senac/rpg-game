@@ -252,6 +252,18 @@ INSERT INTO mobs (nome_inimigo, vida, defesa, ataque, experiencia_dropada, nivel
 ('Forte', 140, 6, 28, 2.0, 1, 15),
 ('Elite', 250, 10, 40, 3.5, 1, 5);
 
+-- mob_drops: drops de teste (Loot & Inimigos, Passo 4a — valores provisórios do
+-- dono do projeto). Inimigo mais forte dropa com mais chance; Elite tem 2 linhas
+-- (dropa espada E escudo, chances independentes). mob_id resolvido por subquery
+-- pelo nome, não hardcoded — não depende da ordem/AUTO_INCREMENT do INSERT acima.
+INSERT INTO mob_drops (mob_id, item_id, quantidade_min, quantidade_max, chance_drop)
+SELECT id, 1, 1, 1, 0.20 FROM mobs WHERE nome_inimigo = 'Comum'
+UNION ALL SELECT id, 1, 1, 1, 0.30 FROM mobs WHERE nome_inimigo = 'Fraco'
+UNION ALL SELECT id, 2, 1, 1, 0.40 FROM mobs WHERE nome_inimigo = 'Medio'
+UNION ALL SELECT id, 2, 1, 1, 0.60 FROM mobs WHERE nome_inimigo = 'Forte'
+UNION ALL SELECT id, 1, 1, 1, 0.80 FROM mobs WHERE nome_inimigo = 'Elite'
+UNION ALL SELECT id, 2, 1, 1, 0.80 FROM mobs WHERE nome_inimigo = 'Elite';
+
 -- jogadores: 1 jogador de teste
 INSERT INTO jogadores (Nome, email, Senha, roles, is_active) VALUES
 ('Jogador Teste', 'teste@jogo-pi.local', 'senha_teste_123', 'user', TRUE);
