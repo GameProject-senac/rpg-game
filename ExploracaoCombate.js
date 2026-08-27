@@ -64,8 +64,10 @@ export class ExploracaoCombate extends Phaser.Scene {
         // ─────────────────────────────────────────────────────────────────
         this.otherPlayers = new Map();
         this.enemyData = new Map();
+        this.itensData = new Map();
 
         this.enemiesGroup = this.physics.add.group();
+        this.itensNoChaoGroup = this.physics.add.group();
 
         // Colisões de Interação (Eventos enviados para o Servidor)
         this.physics.add.collider(this.player, this.enemiesGroup, (p, enemySprite) => {
@@ -79,6 +81,14 @@ export class ExploracaoCombate extends Phaser.Scene {
                 // Knockback Visual
                 const angle = Phaser.Math.Angle.Between(enemySprite.x, enemySprite.y, p.x, p.y);
                 p.body.setVelocity(Math.cos(angle) * 500, Math.sin(angle) * 500);
+            }
+        });
+
+        // Coleta de itens (Passo 5c) — usamos overlap em vez de collider para o jogador não tropeçar no item
+        this.physics.add.overlap(this.player, this.itensNoChaoGroup, (p, itemSprite) => {
+            if (this.socket && this.socket.readyState === WebSocket.OPEN && !itemSprite.isBeingCollected) {
+                itemSprite.isBeingCollected = true; // Trava local para evitar spam do mesmo item
+                sendMessage(this.socket, { type: 'pickup_item', dropId: itemSprite.dropId });
             }
         });
 
@@ -146,7 +156,9 @@ export class ExploracaoCombate extends Phaser.Scene {
             xp_update: this.handleXpUpdate.bind(this),
             inventory_update: this.handleInventoryUpdate.bind(this),
             stats_updated: this.handleStatsUpdated.bind(this),
-            state_update: this.handleStateUpdate.bind(this)
+            state_update: this.handleStateUpdate.bind(this),
+            item_dropped: this.handleItemDropped.bind(this),
+            item_removed: this.handleItemRemoved.bind(this)
         };
 
         this.socket.onmessage = (event) => {
@@ -171,6 +183,11 @@ export class ExploracaoCombate extends Phaser.Scene {
             if (pid !== this.myId) this.spawnRemotePlayer(data.state.players[pid]);
         }
         for (const eid in data.state.enemies) this.spawnEnemy(data.state.enemies[eid]);
+        
+        // Renderiza os itens que já estão no chão ao entrar no jogo (Passo 5b)
+        for (const dropId in data.state.itensNoChao) {
+            this.spawnItem(data.state.itensNoChao[dropId]);
+        }
 
         // Respawn (Round 1): servidor concedeu invulnerabilidade autoritária de 3s (ver join em
         // server.js). Correção Round 2 (bug do movimento congelado): usa `respawnShield`, flag
@@ -343,6 +360,19 @@ export class ExploracaoCombate extends Phaser.Scene {
         }
     }
 
+    // ITENS NO CHÃO (Passo 5b)
+    handleItemDropped(data) {
+        this.spawnItem(data.item);
+    }
+
+    handleItemRemoved(data) {
+        if (this.itensData.has(data.dropId)) {
+            const itemObj = this.itensData.get(data.dropId);
+            itemObj.sprite.destroy();
+            this.itensData.delete(data.dropId);
+        }
+    }
+
     // ─────────────────────────────────────────────────────────────────
     // FUNÇÕES DE SPAWN (RENDERIZAÇÃO LOCAL)
     // ─────────────────────────────────────────────────────────────────
@@ -367,6 +397,27 @@ export class ExploracaoCombate extends Phaser.Scene {
             hp_atual: state.hp_atual, hp_max: state.hp_max, hpGraphics: this.add.graphics(),
             nameText: nameText
         });
+    }
+
+    // Desenha o item no chão (Passo 5b)
+    spawnItem(itemData) {
+        console.log(`[CLIENT] Renderizando item ${itemData.nome} em ${itemData.x}, ${itemData.y}`);
+        
+        // Fallback visual: retângulo amarelo maior e mais visível
+        const sprite = this.add.rectangle(itemData.x, itemData.y, 30, 30, 0xffff00);
+        sprite.setStrokeStyle(4, 0xffa500); // Borda laranja
+        sprite.setDepth(100); // Garante que ficará por cima de tudo
+        
+        this.physics.add.existing(sprite);
+        sprite.body.setImmovable(true);
+        // Ajusta a hitbox para facilitar a coleta
+        sprite.body.setSize(40, 40);
+        
+        sprite.dropId = itemData.id;
+        sprite.isBeingCollected = false; // flag local
+        this.itensNoChaoGroup.add(sprite);
+
+        this.itensData.set(itemData.id, { sprite: sprite, data: itemData });
     }
 
     // ─────────────────────────────────────────────────────────────────

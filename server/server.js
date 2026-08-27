@@ -112,6 +112,15 @@ async function carregarMobDrops() {
     }
 }
 
+// Catálogo de itens carregado no boot para o servidor consultar nomes sem ir ao banco a cada drop.
+const CATALOGO_ITENS = {};
+async function carregarCatalogoItens() {
+    const [rows] = await pool.query('SELECT id, nome, tipo, bonus_dano, bonus_defesa, bonus_hp FROM Itens');
+    for (const r of rows) {
+        CATALOGO_ITENS[r.id] = r;
+    }
+}
+
 // Decide o que um mob dropou na morte (Passo 4b): cada linha de drop do tipo rola sua própria
 // chance, independente das outras (por isso Elite pode dropar espada E escudo). Quantidade
 // sorteada dentro da faixa [quantidade_min, quantidade_max] — hoje sempre 1, mas a faixa é
@@ -151,6 +160,7 @@ function sortearTipoMob() {
     await carregarTabelaNivel();
     await carregarMobsTipos();
     await carregarMobDrops();
+    await carregarCatalogoItens();
 
     iniciarServidor();
 })();
@@ -162,8 +172,11 @@ console.log('🚀 Servidor WebSocket AUTORITÁRIO iniciado (Tick Rate: 20Hz)');
 // O estado supremo do jogo agora reside aqui
 const gameState = {
     players: {},
-    enemies: {}
+    enemies: {},
+    itensNoChao: {}
 };
+
+let dropIdCounter = 0;
 
 // Trava de sessão em memória: personagem_id ativos no momento (efêmera, não persiste).
 const activeSessions = new Set();
@@ -491,6 +504,23 @@ wss.on('connection', (ws) => {
                         // com enemy.id (id da instância, ex. "enemy_1").
                         const dropsObtidos = rolarDrops(enemy.mob_id);
                         if (dropsObtidos.length > 0) {
+                            for (const drop of dropsObtidos) {
+                                dropIdCounter++;
+                                const dropId = `drop_${dropIdCounter}`;
+                                const novoItemNoChao = {
+                                    id: dropId,
+                                    item_id: drop.item_id,
+                                    quantidade: drop.quantidade,
+                                    nome: CATALOGO_ITENS[drop.item_id]?.nome || 'Item Desconhecido',
+                                    // Offset para o item não nascer perfeitamente escondido debaixo do player
+                                    x: enemy.x + (Math.random() * 40 - 20),
+                                    y: enemy.y + (Math.random() * 40 - 20),
+                                    createdAt: Date.now()
+                                };
+                                gameState.itensNoChao[dropId] = novoItemNoChao;
+                                broadcast({ type: 'item_dropped', item: novoItemNoChao });
+                                console.log(`[DROP] ${novoItemNoChao.nome} (${dropId}) criado em ${novoItemNoChao.x.toFixed(1)}, ${novoItemNoChao.y.toFixed(1)}`);
+                            }
                             const resumo = dropsObtidos.map(d => `item_id=${d.item_id} x${d.quantidade}`).join(', ');
                             console.log(`[LOOT] enemy ${enemy.nome} (mob_id=${enemy.mob_id}) dropou: ${resumo}`);
                         } else {
@@ -514,6 +544,52 @@ wss.on('connection', (ws) => {
                         liberarPersonagem(player);
                         personagemId = null;
                     }
+                }
+            }
+            // AÇÃO: Coletar Loot no Chão (Passo 5c)
+            else if (data.type === 'pickup_item') {
+                const dropId = data.dropId;
+                const itemNoChao = gameState.itensNoChao[dropId];
+                
+                // Se o item não existe mais (já foi coletado por outro ou expirou), ignora silenciosamente
+                if (!itemNoChao) return; 
+
+                // Remove do chão imediatamente para evitar corrida de coleta multiplayer
+                delete gameState.itensNoChao[dropId];
+                broadcast({ type: 'item_removed', dropId: dropId, reason: 'collected' });
+                
+                console.log(`[PICKUP] Jogador ${personagemId} coletou ${itemNoChao.nome} x${itemNoChao.quantidade} (${dropId})`);
+
+                try {
+                    // Checa se o jogador já tem o item no inventário
+                    const [rows] = await pool.query('SELECT id, quantidade FROM inventario WHERE personagem_id = ? AND item_id = ?', [personagemId, itemNoChao.item_id]);
+                    
+                    if (rows.length > 0) {
+                        // INCREMENTA se já tem
+                        const invId = rows[0].id;
+                        const novaQuantidade = rows[0].quantidade + itemNoChao.quantidade;
+                        await pool.query('UPDATE inventario SET quantidade = ? WHERE id = ?', [novaQuantidade, invId]);
+                    } else {
+                        // INSERE se não tem
+                        await pool.query('INSERT INTO inventario (personagem_id, item_id, quantidade, equipado) VALUES (?, ?, ?, 0)', [personagemId, itemNoChao.item_id, itemNoChao.quantidade]);
+                    }
+
+                    // Recarrega o inventário em memória (usando o JOIN com Itens para popular nome/tipo/bônus corretamente)
+                    const [invRows] = await pool.query(
+                        `SELECT inventario.id, inventario.item_id, inventario.quantidade, inventario.equipado,
+                                Itens.nome, Itens.tipo, Itens.bonus_dano, Itens.bonus_defesa, Itens.bonus_hp
+                         FROM inventario
+                         JOIN Itens ON Itens.id = inventario.item_id
+                         WHERE inventario.personagem_id = ?`,
+                        [personagemId]
+                    );
+                    player.inventario = invRows;
+                    
+                    // Avisa o cliente para atualizar a UI do inventário
+                    ws.send(JSON.stringify({ type: 'inventory_update', personagem_id: personagemId, itens: player.inventario }));
+
+                } catch (dbErr) {
+                    console.error('[pickup_item] Erro ao persistir coleta de item no banco:', dbErr);
                 }
             }
         } catch (e) {
@@ -656,6 +732,21 @@ setInterval(() => {
     // novo precisa de aviso próprio.
     broadcast({ type: 'enemy_spawned', enemy });
 }, ENEMY_RESPAWN_INTERVAL);
+
+// ────────────────────────────────────────────────────────
+// SWEEP DE ITENS NO CHÃO (Expiração após 45s)
+// ────────────────────────────────────────────────────────
+setInterval(() => {
+    const now = Date.now();
+    for (const dropId in gameState.itensNoChao) {
+        const item = gameState.itensNoChao[dropId];
+        if (now - item.createdAt > 45000) {
+            console.log(`[SWEEP] Item ${item.nome} (${dropId}) expirou e foi removido do mapa.`);
+            delete gameState.itensNoChao[dropId];
+            broadcast({ type: 'item_removed', dropId, reason: 'expired' });
+        }
+    }
+}, 1000);
 
 function broadcast(data, excludeWs = null) {
     const payload = JSON.stringify(data);
