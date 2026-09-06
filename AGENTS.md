@@ -4,6 +4,32 @@ Este documento é a **Constituição Técnica e Manual Operacional** do projeto 
 
 ---
 
+## 00. Armadilhas Conhecidas (Leia Antes de Codar)
+
+Lições já pagas em bugs reais ou decisões de arquitetura fechadas em discussão — reintroduzi-las por "otimização local" é o erro mais provável de um agente novo. Cada bullet vem com o porquê curto. Detalhe histórico completo, quando existir, está no `roadmap_game.md`.
+
+**Técnicas:**
+
+* **DECIMAL do MySQL volta como STRING no driver `mysql2`.** Colunas `DECIMAL` (ex.: `personagens.experiencia`, `mobs.experiencia_dropada`) chegam como *string*, não `number`. Por quê: `+`/`*` direto vira concatenação ou `NaN` — já causou o bug real do "XP = NaN", e `node --check` não pega (é erro de runtime/tipo, não de sintaxe). SEMPRE `Number(...)` antes de aritmética. `INT`/`FLOAT` chegam nativos, sem esse problema — o cuidado é só de `DECIMAL`.
+* **Só o teste manual no navegador valida.** Scripts e `node --check` passam com bugs de runtime, de client, de morte/respawn. Por quê: vários bugs reais (o NaN do XP, comportamento de morte/respawn) só apareceram no teste de campo manual — nada fecha sem isso.
+* **Cache do navegador morde ao trocar arquivos de client.** Hard-refresh (Ctrl+Shift+R) sempre que mudar um arquivo de cena/client. Por quê: senão o navegador serve a versão velha e parece que a mudança não pegou.
+* **Troca de máquina: git traz código, NÃO traz banco nem `.env`.** Cada máquina nova precisa rodar `db/setup_banco.sql` (destrutivo), recriar `server/.env` (gitignored) e o `GRANT` do usuário `rpg_app`. Por quê: sintomas de esquecer isso ("Unknown column X", tabela vazia, "Access denied") custam tempo de debug pra algo que não é bug de código.
+* **Toda mudança de schema é feita em DUAS frentes que precisam bater.** (a) ALTER/INSERT na máquina atual (efeito imediato) e (b) `db/setup_banco.sql` atualizado (pra máquina nova nascer certa). Por quê: se só uma frente for feita, as máquinas divergem e a próxima troca trava.
+* **Os três "ids" do loot são distintos — não confundir.** `enemy.id` = instância do inimigo no `gameState`; `mob_id` = tipo na tabela `mobs` (todos os "Comum" compartilham); `inventario.id` = linha do inventário; `drop_N` = instância do item no chão. Por quê: `mob_drops` liga por `mob_id`, o combate referencia por `enemy.id` — trocar um pelo outro faz a consulta não achar nada.
+* **Commit + push ao FECHAR cada passo validado.** "Testado" ≠ "salvo no git". Por quê: trabalho não commitado trava a troca de máquina e parece perdido.
+* **Timers/tweens de cena Phaser são auto-limpos no shutdown — mas só se usarem a API da cena.** Confirmado no código-fonte do Phaser (`Clock.js`/`TweenManager.js`): ambos escutam o evento `SHUTDOWN` da cena e destroem todos os `TimerEvent`/`Tween` pendentes automaticamente. O projeto hoje só usa `this.time.delayedCall`/`this.tweens.add` dentro de cenas (confirmado por busca no código) — nenhum `setInterval`/`setTimeout` cru em cena (os únicos existem no servidor Node, que vive fora do ciclo de cena). Por quê importa: esse auto-cleanup deixa de valer se algum código novo usar timer JS puro dentro de uma cena — sempre use `this.time`/`this.tweens`, nunca `setInterval`/`setTimeout` cru em uma Scene.
+
+**De design (quebram o balanceamento, não são bugs de código):**
+
+* **Farm infinito é bloqueado por regra: equipamento NÃO empilha bônus.** "Quantidade" no inventário é só contagem; o bônus é sempre de UMA peça equipada. Por quê: se 2 cópias somassem bônus, o jogador farmaria inimigos fracos e ficaria forte sem teto. Poder vem de itens de TIERS diferentes, não de acumular cópias.
+* **XP é por DANO, não por abate.** `dano_efetivo × 0.1 × multiplicador-do-tipo`, dado a cada golpe (não um pico ao matar). Por quê: o modelo antigo (+50 fixo por kill) descolava da curva de nível — uma morte valia 2 níveis. Exceção futura: só o BOSS terá pico de abate proporcional por dano (ainda não implementado).
+* **"Dano efetivo" conta pro XP, não o dano bruto.** O golpe que mata não dá XP além da vida que o inimigo ainda tinha. Por quê: evita XP fantasma no golpe final (dano que "estoura" o HP não conta).
+* **Regra fixa mora no CÓDIGO; conteúdo que multiplica mora no BANCO.** Fórmula de XP, cálculo de atributos → código (regra única, não varia em quantidade). Tipos de inimigo, bônus de item, drops, tabela de níveis → banco, carregado em memória no boot. Por quê: os NÚMEROS ficam calibráveis pela equipe sem tocar em código; o banco é armazenamento/cardápio, não contrato absoluto — usa-se o que serve.
+* **Progressão é NATURAL, não desbloqueio programado.** Todos os tipos de inimigo aparecem no mapa desde o início; a dificuldade emerge da força do jogador vs. a do inimigo. Por quê: decisão consciente de não programar o que já emerge sozinho — não existe (nem deve existir) sistema de "matou X, libera Y".
+* **Atributos (`hp_max`/`dano_base`/`defesa_base`) são SEMPRE recalculados, nunca persistidos.** Grava-se o estado (`hp_atual`, `nivel`, `experiencia`), nunca os derivados. Por quê: já causou o bug real do mago com `hp_max` desatualizado — persistir o derivado cria uma segunda fonte de verdade que diverge da primeira.
+
+---
+
 ## 01. Identidade e Papel da IA
 
 ### PAPEL
@@ -97,6 +123,15 @@ Antes de propor ou escrever qualquer código, execute mentalmente esta sequênci
 
 ```
 
+### MAPA DO REPOSITÓRIO
+
+* **`server/`** — autoridade única do jogo. `server.js` (Node + WebSocket `ws`, MySQL via `mysql2/promise`, toda regra de negócio e persistência); `.env`/`.env.example` (credenciais, gitignored — cada máquina tem o seu); scripts `test_*.js` (clientes WebSocket crus de teste, não fazem parte do jogo); `schema.sql`/`seed_teste.sql` (banco antigo `rpg_game`, pré-migração A1 — histórico, não usado).
+* **Raiz (`*.js`)** — client Phaser. Cenas da FSM: `Boot`, `Preload`, `MainMenu`, `SelecaoPersonagem`, `Loading`, `HubCentral`, `ExploracaoCombate` (+ `UIScene` rodando em paralelo durante o combate, tela de inventário). `main.js` inicializa o `Phaser.Game`; `networkConfig.js` centraliza `SERVER_URL`/`sendMessage` compartilhados entre cenas.
+* **`db/setup_banco.sql`** — fonte única de verdade do schema (ver §07). `SchemaCompleto.sql` (raiz) é o script original entregue pela equipe técnica, mantido só como referência histórica — não editar, não é o que roda.
+* **`map/`** — projetos Godot da equipe de arte/design (mapas prontos, gerador procedural, engine de mapa): matéria-prima para a Fase 3/dungeons, ainda não integrada ao client Phaser.
+* **`MAPA E PERSONAGENS/`** — imagens de referência de arte (concept de mapas/personagens/sprites).
+* **Documentação:** `AGENTS.md` (este arquivo, regras vigentes) · `roadmap_game.md` (histórico do que foi feito e pendências) · `spec_p5_coleta_loot.md` (spec do próximo passo grande a implementar) · `commands.md` (comandos para subir servidor/client).
+
 ---
 
 ## 06. Ciclo de Cenas & Máquina de Estados Finitos (FSM)
@@ -115,7 +150,7 @@ A aplicação é governada por uma FSM determinística. Toda transição entre a
 Sempre que executar a transição de uma cena via `scene.start()` ou `scene.switch()`, o código deve obrigatoriamente realizar a seguinte rotina de limpeza:
 
 1. **Desregistrar Listeners:** Remover todos os *event listeners* customizados (`this.events.off(...)` e receptores do EventBus global).
-2. **Encerrar Timers e Tweens:** Parar e destruir `Phaser.Time.TimerEvent` e `Phaser.Tweens.Tween` em execução.
+2. **Timers e Tweens só pela API da cena:** Use exclusivamente `this.time.delayedCall`/`this.tweens.add` — o Phaser já destrói automaticamente todo `TimerEvent`/`Tween` pendente no `shutdown` da cena (confirmado no código-fonte do Phaser, ver Armadilha Técnica no topo deste documento). **Nunca** use `setInterval`/`setTimeout` cru dentro de uma cena: isso escapa desse cleanup automático e vaza de verdade.
 3. **Limpar Física e Dicionários:** Destruir colisores, grupos físicos e cancelar iterações.
 4. **Persistir / Restaurar Estado:** Garantir que o estado do jogador no `registry` ou banco de dados MySQL esteja sincronizado antes da troca.
 5. **Liberar Memória:** Garantir que referências cruzadas a objetos temporários sejam anuladas (`null`) para evitar *memory leaks*.
@@ -126,48 +161,7 @@ Sempre que executar a transição de uma cena via `scene.start()` ou `scene.swit
 
 O banco de dados relacional **MySQL** é a autoridade máxima de dados persistentes do projeto.
 
-> **Histórico — rascunho de design original, não é mais o schema em produção.** O schema real (banco `jogo_pi`, 14 tabelas incluindo `Itens` como catálogo separado) foi trocado pelo oficial da equipe técnica em 2026-07-30 (migração A1) — fonte de verdade em `db/setup_banco.sql`, detalhe das divergências em `roadmap_game.md` §2. Principal mudança que afeta código: `inventario.item_id` é `INT` (FK pra `Itens.id`), não `VARCHAR`; `tipo`/bônus de atributo do item vêm de `Itens`, não de `inventario` nem de constante hardcoded. **Divergência adicional (2026-08-02):** `personagens.experiencia` real é `DECIMAL(12,2)`, não `INT` como no rascunho abaixo — migrado junto do ajuste de XP por dano efetivo, ver `roadmap_game.md` §2.16. **Divergência adicional (2026-08-03, Loot & Inimigos Passo 1):** `mobs.experiencia_dropada` real é `DECIMAL(4,2)`, não `INT` — virou multiplicador de XP por tipo de inimigo, não valor fixo de abate; a tabela `mobs` saiu de vazia para 4 linhas populadas (`Comum/Fraco/Medio/Forte`) e passou a ser lida no boot do servidor — inimigos não são mais hardcoded, ver `roadmap_game.md` §2.17. **Divergência adicional (2026-08-13, Loot & Inimigos Passo 2):** `mobs` ganhou a coluna `peso_spawn` (`INT NOT NULL DEFAULT 10`) e um 5º tipo, `Elite` (raro/forte) — a tabela tem hoje 5 linhas, não 4, e o spawn deixou de sortear tipo uniformemente: sorteia ponderado por `peso_spawn`, ver `roadmap_game.md` §2.18. **Divergência adicional (2026-08-25, Loot & Inimigos Passo 4):** `mob_drops` (schema desde a A1, vazia até então) foi populada com 6 linhas de teste (Comum/Fraco/Medio/Forte cada um com 1 drop, Elite com 2) e passou a ser lida no boot (`MOB_DROPS`, em memória); o objeto `enemy` em `gameState` ganhou o campo `mob_id` (id da linha em `mobs`, distinto de `enemy.id` — id da instância), necessário pra FK de `mob_drops`. A decisão de drop roda na morte do inimigo mas só loga (`[LOOT] ...`) — item ainda não é coletável/visual, ver `roadmap_game.md` §2.19.
->
-> **Nota técnica — colunas `DECIMAL` e o driver `mysql2`:** `mysql2` retorna coluna `DECIMAL`/`NEWDECIMAL` como **string**, não `number` (a menos que `decimalNumbers: true` esteja configurado no pool — não está). Qualquer leitura de coluna `DECIMAL` que vá alimentar aritmética **precisa** passar por `Number(...)` explícito ao sair do banco, senão `+=`/`*` vira concatenação de string ou `NaN`. Isso já causou um bug real em `personagens.experiencia` (ver `roadmap_game.md` §2.16) e **já reapareceu uma segunda vez, sem virar bug**, em `mobs.experiencia_dropada` (Passo 1c, `roadmap_game.md` §2.17 — convertido corretamente com `Number()` no carregamento em memória). Ainda vai reaparecer quando o boss dividir XP proporcional (fase de loot, §7.3) — qualquer leitura nova de coluna decimal precisa lembrar dessa conversão. **Contraste confirmado (Passo 4, 2026-08-25):** colunas `FLOAT`/`INT` (`mob_drops.chance_drop`, `quantidade_min`/`quantidade_max`) **não** têm esse problema — chegam como `number` nativo, confirmado por teste isolado. A conversão só é necessária pra `DECIMAL`/`NEWDECIMAL`.
-
-```sql
--- Schema Relacional do Sistema
-CREATE TABLE IF NOT EXISTS jogadores (
-    id INT AUTO_INCREMENT PRIMARY KEY,
-    username VARCHAR(50) NOT NULL UNIQUE,
-    senha_hash VARCHAR(255) NOT NULL,
-    criado_em TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-
-CREATE TABLE IF NOT EXISTS personagens (
-    id INT AUTO_INCREMENT PRIMARY KEY,
-    jogadores_id INT NOT NULL,
-    nome VARCHAR(50) NOT NULL,
-    classe VARCHAR(30) NOT NULL,
-    nivel INT DEFAULT 1,
-    experiencia INT DEFAULT 0,
-    hp_atual INT NOT NULL,
-    hp_max INT NOT NULL,
-    dano_base INT NOT NULL,
-    defesa_base INT NOT NULL,
-    posicao_x FLOAT DEFAULT 100.0,
-    posicao_y FLOAT DEFAULT 100.0,
-    cena_atual VARCHAR(50) DEFAULT 'HubCentral',
-    criado_em TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    CONSTRAINT fk_personagem_jogador FOREIGN KEY (jogadores_id) REFERENCES jogadores(id) ON DELETE CASCADE
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-
-CREATE TABLE IF NOT EXISTS inventario (
-    id INT AUTO_INCREMENT PRIMARY KEY,
-    personagem_id INT NOT NULL,
-    item_id VARCHAR(50) NOT NULL,
-    quantidade INT DEFAULT 1,
-    tipo VARCHAR(30) NOT NULL,
-    equipado BOOLEAN DEFAULT FALSE,
-    CONSTRAINT fk_inventario_personagem FOREIGN KEY (personagem_id) REFERENCES personagens(id) ON DELETE CASCADE
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-
-```
+> **Fonte única de verdade do schema: `db/setup_banco.sql`.** Script destrutivo (recria o banco `jogo_pi` do zero, 14 tabelas) usado para nascer/sincronizar o schema em qualquer máquina do time — ver Armadilha Técnica "duas frentes" no topo deste documento antes de alterar schema. **Nunca copie definições de tabela (SQL) para a documentação** — elas desatualizam a cada mudança; consulte sempre o arquivo. `SchemaCompleto.sql` (raiz do repo) é o script original entregue pela equipe, mantido só como referência histórica — não é o que roda. O histórico de como o schema evoluiu desde a migração A1 (2026-07-30) até hoje, com todas as divergências datadas, está em `roadmap_game.md` §2. Cuidado técnico específico de colunas `DECIMAL` (`mysql2` devolve como string): ver Armadilha Técnica #1 no topo deste documento.
 
 ---
 
@@ -207,6 +201,15 @@ Como o jogo utiliza um mapa extenso de **2000x2000 pixels**, a gestão de recurs
 ---
 
 ## 10. Processos Operacionais da IA
+
+### MÉTODO DE TRABALHO (Como Conduzir Cada Sub-Passo)
+
+1. **Passo-teste-passo.** Fatie cada feature em sub-passos pequenos e independentes, cada um testável sozinho. Nunca empilhe o próximo sobre o anterior sem validar o anterior no navegador — se algo quebra, sabe-se em qual sub-passo.
+2. **Investigar ANTES de mexer.** Antes de implementar, levante o estado atual do código/banco (MODO DEBUG abaixo: só reportar, não alterar). O retrato do que existe de verdade define o tamanho real do passo e evita presunção.
+3. **MODO ARQUITETO é obrigatório em sub-passos de risco** (lógica nova ou que toca o banco) — ver protocolo logo abaixo.
+4. **Teste manual no navegador é obrigatório para fechar qualquer sub-passo que toque o client.** `node --check` e scripts de servidor não substituem isso (ver Armadilha Técnica #2 no topo deste documento) — nada é "fechado" até rodar de verdade e ver funcionar.
+5. **Debug visual é provisório.** Cores sólidas por tipo, UI feia de propósito etc. são ferramenta de teste/identificação, não arte — serão substituídas pelos sprites do Godot. Não invista em "bonito" no que vai ser trocado.
+6. **Documentação aponta pra fonte única, nunca duplica.** Uma informação mora em UM lugar; os outros documentos apontam pra ele (ex.: schema → `db/setup_banco.sql`, §07). Nunca copie SQL, regra ou decisão em mais de um doc.
 
 ### MODO ARQUITETO (Quando o Usuário Pede uma Feature Nova)
 

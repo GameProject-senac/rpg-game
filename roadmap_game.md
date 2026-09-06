@@ -2,11 +2,13 @@
 
 > **Documento único.** Este arquivo incorpora integralmente o que antes vivia em `fase2_spec.md` (especificação de execução da Fase 2, agora §9, histórico) e `fase2finalizacao.md` (achados de teste de campo e fechamento da Fase 2, agora §3 · FASE 2 §2.8-§2.11). Os dois arquivos separados foram descontinuados em 2026-07-26 para garantir uma fonte única de verdade documental — nenhuma informação foi descartada na fusão, só reorganizada. Referências a "fase2_spec.md §X" em comentários de código (`UIScene.js`, `ExploracaoCombate.js`, `server/server.js`) continuam válidas: a numeração interna da especificação original foi preservada no §9.
 
-**Status Atualizado (2026-08-25):**
-A **Fase 1 (Multiplayer LAN & WebSockets)** e a **Fase 2 (Persistência MySQL, Identidade de Personagem e Progressão)** estão **formalmente concluídas e validadas em teste de campo manual** (2026-07-26). A Fase 2 foi executada em 5 pacotes sequenciais especificados em §9 (histórico), todos implementados, testados e documentados (ver §2.3-§2.7), e em seguida passou por dois rounds de correção pós-teste-de-campo (§2.8-§2.10) até fechar por completo (§2.11). Após o fechamento da Fase 2, o **Round 3 (Inventário Clicável, pós-Fase 2)** também foi concluído e validado em teste de campo (2026-07-26) — ver §2.12. Numa sessão de migração de banco conduzida pelo dono do projeto fora deste documento, a **Fase A** trocou o banco local pelo schema oficial da equipe — **`jogo_pi`** (`db/setup_banco.sql`, A1, substitui o antigo `rpg_game`/`server/schema.sql`) — em três passos: A1 (schema novo), A2 (levantamento de quebras: spawn de inimigos sobrepostos e inventário quebrado contra o schema novo) e A3 (adaptação do inventário, §2.14). **A Fase A está fechada e validada em campo (2026-07-31)** — spawn corrigido (§2.13), inventário funcionando (§2.14), e o objeto `ITENS` hardcoded (órfão desde a A3) foi removido de `server/server.js`. Em 2026-07-31 foi implementado um primeiro novo modelo de XP/nível (§2.15, histórico — superado abaixo): XP por dano causado sem matar, XP de morte mantido em 50 fixo, subida de nível lendo `table_nivel`. Em **2026-08-02**, por decisão do dono, o **modelo de XP dos inimigos comuns foi ajustado** (§2.16): o pico de abate de 50 XP saiu — todo golpe, inclusive o que mata, concede `dano_efetivo × 0.1` (caminho único); `personagens.experiencia` migrou de `INT` para `DECIMAL(12,2)`; barra de progresso de XP entrou na UI; e um bug de `NaN` causado pela migração (mysql2 devolve `DECIMAL` como string) foi encontrado e corrigido. **Implementado e validado em campo (2026-08-02).** Em **2026-08-03**, o **Bloco Loot & Inimigos** foi iniciado: o **Passo 1 (inimigos vêm da tabela `mobs`, não mais hardcoded)** foi concluído em 4 sub-passos (1a-1d, ver §2.17) — tabela `mobs` populada com 4 tipos de teste, spawn sorteando tipo aleatório, XP ponderado por multiplicador do tipo, e cor/nome por tipo no client. **Implementado e validado em campo (2026-08-03).** Em **2026-08-13**, o **Passo 2 (Elite raro/forte)** foi concluído em 3 sub-passos (2a-2c, ver §2.18) — `mobs` ganhou a coluna `peso_spawn` e o 5º tipo `Elite`, o sorteio de spawn deixou de ser uniforme e passou a ser ponderado por esse peso, e o client ganhou a cor roxa do Elite. **Implementado, dono testou com peso do Elite inflado temporariamente e confirmou.** Em **2026-08-25**, o **Passo 4 (loot/drop de item ao morrer — decisão + log, sem coleta visual)** foi concluído em 2 sub-passos (4a-4b, ver §2.19) — o inimigo passou a carregar `mob_id` (id do tipo na tabela `mobs`, distinto do id de instância), a tabela `mob_drops` foi populada com 6 linhas de teste, e o servidor passou a decidir (rolar chance + quantidade) e logar o que cada inimigo dropa na morte, sem ainda dar destino visual ao item. **Implementado e validado por checagem de código/banco (2026-08-25); teste de campo do dono ainda pendente.** O **Passo 5 (item dropado vira coletável no mapa)** teve investigação de debug concluída na mesma data (não implementado ainda, ver §2.20) — decisão de arquitetura de detecção de coleta fica para a próxima sessão.
-**Foco Atual (Estado de parada):** Fase 2, Round 3, Fase A, o ajuste de XP dos comuns (§2.16) e o Bloco Loot & Inimigos Passo 1 (§2.17), Passo 2 (§2.18) e Passo 4 (§2.19) **completos**. Passo 4 aguarda só teste de campo do dono (a decisão/log já está implementada e verificada por código). Pico/abate proporcional para boss (P3) segue adiado, e o Passo 5 (coleta no mapa, §2.20) tem investigação feita mas implementação **NÃO iniciada por decisão do dono** — ver §7.3. Próxima sessão: **implementar o Passo 5**, partindo das decisões de arquitetura ainda em aberto listadas em §2.20/§6.
+**Status Atualizado (2026-09-06):**
+A **Fase 1 (Multiplayer LAN & WebSockets)** e a **Fase 2 (Persistência MySQL, Identidade de Personagem e Progressão)** estão **formalmente concluídas e validadas em teste de campo manual** (2026-07-26). A Fase 2 foi executada em 5 pacotes sequenciais especificados em §9 (histórico), todos implementados, testados e documentados (ver §2.3-§2.7), e em seguida passou por dois rounds de correção pós-teste-de-campo (§2.8-§2.10) até fechar por completo (§2.11). Após o fechamento da Fase 2, o **Round 3 (Inventário Clicável, pós-Fase 2)** também foi concluído e validado em teste de campo (2026-07-26) — ver §2.12. Numa sessão de migração de banco conduzida pelo dono do projeto fora deste documento, a **Fase A** trocou o banco local pelo schema oficial da equipe — **`jogo_pi`** (`db/setup_banco.sql`, A1, substitui o antigo `rpg_game`/`server/schema.sql`) — em três passos: A1 (schema novo), A2 (levantamento de quebras: spawn de inimigos sobrepostos e inventário quebrado contra o schema novo) e A3 (adaptação do inventário, §2.14). **A Fase A está fechada e validada em campo (2026-07-31)** — spawn corrigido (§2.13), inventário funcionando (§2.14), e o objeto `ITENS` hardcoded (órfão desde a A3) foi removido de `server/server.js`. Em 2026-07-31 foi implementado um primeiro novo modelo de XP/nível (§2.15, histórico — superado abaixo): XP por dano causado sem matar, XP de morte mantido em 50 fixo, subida de nível lendo `table_nivel`. Em **2026-08-02**, por decisão do dono, o **modelo de XP dos inimigos comuns foi ajustado** (§2.16): o pico de abate de 50 XP saiu — todo golpe, inclusive o que mata, concede `dano_efetivo × 0.1` (caminho único); `personagens.experiencia` migrou de `INT` para `DECIMAL(12,2)`; barra de progresso de XP entrou na UI; e um bug de `NaN` causado pela migração (mysql2 devolve `DECIMAL` como string) foi encontrado e corrigido. **Implementado e validado em campo (2026-08-02).** Em **2026-08-03**, o **Bloco Loot & Inimigos** foi iniciado: o **Passo 1 (inimigos vêm da tabela `mobs`, não mais hardcoded)** foi concluído em 4 sub-passos (1a-1d, ver §2.17) — tabela `mobs` populada com 4 tipos de teste, spawn sorteando tipo aleatório, XP ponderado por multiplicador do tipo, e cor/nome por tipo no client. **Implementado e validado em campo (2026-08-03).** Em **2026-08-13**, o **Passo 2 (Elite raro/forte)** foi concluído em 3 sub-passos (2a-2c, ver §2.18) — `mobs` ganhou a coluna `peso_spawn` e o 5º tipo `Elite`, o sorteio de spawn deixou de ser uniforme e passou a ser ponderado por esse peso, e o client ganhou a cor roxa do Elite. **Implementado, dono testou com peso do Elite inflado temporariamente e confirmou.** Em **2026-08-25**, o **Passo 4 (loot/drop de item ao morrer — decisão + log, sem coleta visual)** foi concluído em 2 sub-passos (4a-4b, ver §2.19) — o inimigo passou a carregar `mob_id` (id do tipo na tabela `mobs`, distinto do id de instância), a tabela `mob_drops` foi populada com 6 linhas de teste, e o servidor passou a decidir (rolar chance + quantidade) e logar o que cada inimigo dropa na morte, sem ainda dar destino visual ao item. **Implementado e validado por checagem de código/banco (2026-08-25).** O **Passo 5 (coleta de loot no mapa: item no chão, pickup, INSERT/incremento no inventário, timer de expiração 45s)** foi **IMPLEMENTADO e VALIDADO em campo (2026-09-06)** — item cai, jogador coleta e vai para o inventário (confirmado por SELECT no banco). Com isso, o Bloco Loot & Inimigos está completo do P1 ao P5.
+**Foco Atual (Estado de parada):** O Bloco Loot & Inimigos (Passos 1 ao 5) está **100% completo e validado**. O Passo 5 fechou o loop visual e de persistência da coleta. *Pendência cosmética conhecida:* a UI do inventário ainda não exibe a quantidade (x2/x3) das cópias coletadas — o banco grava corretamente o incremento, mas a renderização na UI foi adiada de propósito para quando o inventário for refeito com os ícones do Godot. Próxima sessão: **P3 (boss principal + dungeons)**.
 
 **Origem:** Documento mestre de especificação técnica e roadmap operacional para desenvolvimento solo do *Project Post-Apoc RPG / Horizon Co-op*. Este arquivo serve como contexto técnico e guia de execução contínua para qualquer agente de IA ou sessão de desenvolvimento.
+
+> **Papel deste documento (reorganização de 2026-09-06):** este arquivo é o **registro histórico** — o que foi feito, quando, por quê, e o que falta (roadmap/pendências). As **regras vigentes** que um agente novo precisa seguir HOJE (armadilhas conhecidas, método de trabalho, mapa do repositório, regras de arquitetura) moram no `AGENTS.md` — comece por lá, não por aqui. As seções abaixo (principalmente §1 e §9) registram decisões tomadas em datas específicas com o contexto da época; onde uma decisão virou regra permanente, ela também foi destilada no `AGENTS.md` (ex.: recálculo de atributos, XP por dano, DECIMAL do mysql2) — este documento não foi reescrito para removê-las porque são o registro de *quando e por que* cada uma nasceu, não uma cópia solta.
 
 ---
 
@@ -52,56 +54,7 @@ Decisões deliberadas e fechadas durante a Fase 2 (Pacotes 1-4), registradas aqu
 
 ## 2. Schema do Banco de Dados Relacional (MySQL 8.0+)
 
-> **Histórico — este bloco é o rascunho de design original (pré-Pacote 1) e não reflete o schema real em produção.** O schema efetivamente aplicado é o da equipe técnica, banco `jogo_pi`, com 14 tabelas (`jogadores`, `Itens`, `mobs`, `skills`, `table_nivel`, `personagens`, `map`, `skill_levels`, `class_skills`, `skill_tree`, `personagem_skills`, `inventario`, `map_items`, `mob_drops`) — fonte única de verdade em `db/setup_banco.sql` (migração A1, 2026-07-30). Principais divergências deste rascunho: `inventario.item_id` é `INT` (FK pra `Itens.id`), não `VARCHAR`; a coluna `tipo` saiu de `inventario` e mora em `Itens.tipo` (com `bonus_dano/bonus_defesa/bonus_hp` junto); `itens_instanciados_mapa` deste rascunho virou `map_items` no schema real (ainda não usada em código — loot de mapa continua adiado, §7.3); `jogadores` real tem colunas bem diferentes (`Nome/email/Senha/roles/is_active/created_at/current_map_id`, não `username/senha_hash`); `personagens.experiencia` real é `DECIMAL(12,2)` desde 2026-08-02 (era `INT`, ver §2.16), não o `INT` mostrado no rascunho abaixo; `mobs.experiencia_dropada` real é `DECIMAL(4,2)` desde 2026-08-03 (era `INT`, ver §2.17), e a tabela `mobs` — vazia até então — está populada com 4 tipos de teste e é lida pelo servidor no boot (inimigos não são mais hardcoded). Mantido abaixo só como registro do design original.
-
-```sql
--- Schema Completo do Banco de Dados do Game (schema_game.sql)
-
-CREATE TABLE IF NOT EXISTS jogadores (
-    id INT AUTO_INCREMENT PRIMARY KEY,
-    username VARCHAR(50) NOT NULL UNIQUE,
-    senha_hash VARCHAR(255) NOT NULL,
-    criado_em TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-
-CREATE TABLE IF NOT EXISTS personagens (
-    id INT AUTO_INCREMENT PRIMARY KEY,
-    jogadores_id INT NOT NULL,
-    nome VARCHAR(50) NOT NULL,
-    classe VARCHAR(30) NOT NULL, -- Ex: 'Tanque', 'Atirador', 'Suporte'
-    nivel INT DEFAULT 1,
-    experiencia INT DEFAULT 0,
-    hp_atual INT NOT NULL,
-    hp_max INT NOT NULL,
-    dano_base INT NOT NULL,
-    defesa_base INT NOT NULL,
-    posicao_x FLOAT DEFAULT 100.0,
-    posicao_y FLOAT DEFAULT 100.0,
-    cena_atual VARCHAR(50) DEFAULT 'HubCentral',
-    atualizado_em TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-    CONSTRAINT fk_personagem_jogador FOREIGN KEY (jogadores_id) REFERENCES jogadores(id) ON DELETE CASCADE
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-
-CREATE TABLE IF NOT EXISTS inventario (
-    id INT AUTO_INCREMENT PRIMARY KEY,
-    personagem_id INT NOT NULL,
-    item_id VARCHAR(50) NOT NULL,
-    quantidade INT DEFAULT 1,
-    tipo VARCHAR(30) NOT NULL, -- Ex: 'Consumivel', 'Equipamento', 'Recurso'
-    equipado BOOLEAN DEFAULT FALSE,
-    CONSTRAINT fk_inventario_personagem FOREIGN KEY (personagem_id) REFERENCES personagens(id) ON DELETE CASCADE
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-
-CREATE TABLE IF NOT EXISTS itens_instanciados_mapa (
-    id VARCHAR(100) PRIMARY KEY,
-    item_id VARCHAR(50) NOT NULL,
-    posicao_x FLOAT NOT NULL,
-    posicao_y FLOAT NOT NULL,
-    coletado BOOLEAN DEFAULT FALSE,
-    instancia_partida_id VARCHAR(100) NOT NULL
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-
-```
+> **Histórico — este bloco descrevia o rascunho de design original (pré-Pacote 1); o SQL desse rascunho foi removido desta seção em 2026-09-06 (reorganização de documentação) por estar duplicado com a versão antiga do `AGENTS.md` §07 e desatualizado há várias migrações.** O schema efetivamente aplicado é o da equipe técnica, banco `jogo_pi`, com 14 tabelas (`jogadores`, `Itens`, `mobs`, `skills`, `table_nivel`, `personagens`, `map`, `skill_levels`, `class_skills`, `skill_tree`, `personagem_skills`, `inventario`, `map_items`, `mob_drops`) — **fonte única de verdade em `db/setup_banco.sql`** (migração A1, 2026-07-30; ver também `AGENTS.md` §07). Principais divergências do rascunho antigo, mantidas aqui só como registro histórico do que mudou: `inventario.item_id` é `INT` (FK pra `Itens.id`), não `VARCHAR`; a coluna `tipo` saiu de `inventario` e mora em `Itens.tipo` (com `bonus_dano/bonus_defesa/bonus_hp` junto); `itens_instanciados_mapa` do rascunho virou `map_items` no schema real (ainda não usada em código — loot de mapa continua adiado, §7.3); `jogadores` real tem colunas bem diferentes (`Nome/email/Senha/roles/is_active/created_at/current_map_id`, não `username/senha_hash`); `personagens.experiencia` real é `DECIMAL(12,2)` desde 2026-08-02 (era `INT`, ver §2.16); `mobs.experiencia_dropada` real é `DECIMAL(4,2)` desde 2026-08-03 (era `INT`, ver §2.17), e a tabela `mobs` — vazia até então — está populada com tipos de teste e é lida pelo servidor no boot (inimigos não são mais hardcoded). Para o schema atual, sempre consultar `db/setup_banco.sql` diretamente — não um snapshot aqui, que desatualiza a cada mudança.
 
 ---
 

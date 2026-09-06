@@ -1,4 +1,5 @@
 # P5 — Coleta de Loot no Mapa (spec completa)
+> **STATUS: IMPLEMENTADO E VALIDADO [2026-09-06]**
 
 **Objetivo:** fechar o loop de loot visualmente. Mata inimigo → item cai no chão →
 jogador anda por cima → item vai pro inventário. Reconstrói o caminho de coleta que
