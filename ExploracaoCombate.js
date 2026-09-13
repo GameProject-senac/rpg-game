@@ -4,6 +4,17 @@
  */
 
 import { SERVER_URL, sendMessage } from './networkConfig.js';
+import { ensurePlayerAnimations } from './playerAnimations.js';
+import { ensureEnemyAnimations } from './enemyAnimations.js';
+
+// Mapeamento visual de inimigos com sprites animados e tint leve para diferenciação de tier
+const ENEMY_VISUAL_CONFIG = {
+    'Comum':  { texture: 'slime',    anim: 'slime',    tint: null,     bodySize: 24, hpOffset: -20, nameOffset: -32, barWidth: 30 },
+    'Fraco':  { texture: 'slime',    anim: 'slime',    tint: 0x88ff88, bodySize: 24, hpOffset: -20, nameOffset: -32, barWidth: 30 },
+    'Medio':  { texture: 'skeleton', anim: 'skeleton', tint: null,     bodySize: 32, hpOffset: -28, nameOffset: -40, barWidth: 36 },
+    'Forte':  { texture: 'skeleton', anim: 'skeleton', tint: 0xff7777, bodySize: 32, hpOffset: -28, nameOffset: -40, barWidth: 36 },
+    'Elite':  { texture: 'skeleton', anim: 'skeleton', tint: 0xcc66ff, bodySize: 32, hpOffset: -28, nameOffset: -40, barWidth: 36 }
+};
 
 // Loot & Inimigos, Passo 1d (Elite roxo adicionado no Passo 2c) — DEBUG VISUAL, não arte final:
 // cor sólida por tipo (mobs.nome_inimigo) só pra identificar em teste. Some quando o sprite Godot
@@ -29,6 +40,10 @@ export class ExploracaoCombate extends Phaser.Scene {
     }
 
     create() {
+        // Garante que as animações globais do player e inimigos existam mesmo após recarregamento
+        ensurePlayerAnimations(this);
+        ensureEnemyAnimations(this);
+
         // Causa A (teste de campo Fase 2): playerStats/myId NÃO eram resetados aqui, então
         // sobreviviam zumbis a um scene.restart() — o guard `if (!this.playerStats) return`
         // do update() parava de proteger porque o objeto antigo continuava truthy.
@@ -46,22 +61,50 @@ export class ExploracaoCombate extends Phaser.Scene {
         this.player.body.setCollideWorldBounds(true);
         this.player.invulnerable = false;
         this.player.setVisible(false);
-        this.playerVisual = this.add.rectangle(this.player.x, this.player.y, 40, 40, 0x00ffff);
+
+        if (this.textures.exists('player')) {
+            this.playerVisual = this.add.sprite(this.player.x, this.player.y, 'player');
+            this.playerVisual.setDepth(5);
+            if (this.anims.exists('player-idle-down')) {
+                this.playerVisual.play('player-idle-down');
+            }
+        } else {
+            console.warn('[ExploracaoCombate] Textura "player" não carregada. Usando fallback de debug.');
+            this.playerVisual = this.add.rectangle(this.player.x, this.player.y, 40, 40, 0x00ffff);
+            this.playerVisual.setDepth(5);
+        }
+        this.playerLastFacing = 'down'; // 'down' | 'up' | 'side'
+        this.playerFlipX = false;
         this.portalState = { active: false, progress: 0, occupants: 0, required_level: PORTAL_BOSS_MIN_LEVEL };
-        this.portalVisual = this.add.rectangle(PORTAL_BOSS_ENTRY.x, PORTAL_BOSS_ENTRY.y, PORTAL_BOSS_RADIUS * 2, PORTAL_BOSS_RADIUS * 2, 0x00ff66, 0.12)
-            .setStrokeStyle(3, 0x00ff66);
-        this.portalLabel = this.add.text(PORTAL_BOSS_ENTRY.x, PORTAL_BOSS_ENTRY.y - PORTAL_BOSS_RADIUS - 20, 'PORTAL', {
+        if (this.textures.exists('portal')) {
+            if (!this.anims.exists('portal-loop')) {
+                this.anims.create({
+                    key: 'portal-loop',
+                    frames: this.anims.generateFrameNumbers('portal', { start: 0, end: 16 }),
+                    frameRate: 10,
+                    repeat: -1
+                });
+            }
+            this.portalVisual = this.add.sprite(PORTAL_BOSS_ENTRY.x, PORTAL_BOSS_ENTRY.y, 'portal');
+            this.portalVisual.setDepth(1);
+            this.portalVisual.play('portal-loop');
+        } else {
+            console.warn('[ExploracaoCombate] Textura "portal" não carregada. Usando fallback de debug.');
+            this.portalVisual = this.add.rectangle(PORTAL_BOSS_ENTRY.x, PORTAL_BOSS_ENTRY.y, PORTAL_BOSS_RADIUS * 2, PORTAL_BOSS_RADIUS * 2, 0x00ff66, 0.12)
+                .setStrokeStyle(3, 0x00ff66);
+        }
+        this.portalLabel = this.add.text(PORTAL_BOSS_ENTRY.x, PORTAL_BOSS_ENTRY.y - 70, 'PORTAL', {
             color: '#00ff66',
             fontSize: '18px',
             backgroundColor: '#00000080',
             padding: { x: 4, y: 2 }
-        }).setOrigin(0.5);
-        this.portalProgressText = this.add.text(PORTAL_BOSS_ENTRY.x, PORTAL_BOSS_ENTRY.y - PORTAL_BOSS_RADIUS - 42, `NÍVEL ${PORTAL_BOSS_MIN_LEVEL}+`, {
+        }).setOrigin(0.5).setDepth(10);
+        this.portalProgressText = this.add.text(PORTAL_BOSS_ENTRY.x, PORTAL_BOSS_ENTRY.y - 92, `NÍVEL ${PORTAL_BOSS_MIN_LEVEL}+`, {
             color: '#ffffff',
             fontSize: '14px',
             backgroundColor: '#00000080',
             padding: { x: 4, y: 2 }
-        }).setOrigin(0.5);
+        }).setOrigin(0.5).setDepth(10);
         // Imunidade de respawn (Round 2, correção do congelamento de movimento): flag própria,
         // separada de `invulnerable` (knockback). NÃO gateia movimento nem o collider de ataque —
         // só a proteção contra dano é autoritária no servidor. Gancho reservado para feedback
@@ -157,7 +200,10 @@ export class ExploracaoCombate extends Phaser.Scene {
             this.portalLabel.destroy();
             this.portalProgressText.destroy();
             this.enemyData.forEach(data => { data.hpGraphics.destroy(); data.nameText.destroy(); });
-            this.otherPlayers.forEach(rp => rp.hpGraphics.destroy());
+            this.otherPlayers.forEach(rp => {
+                rp.hpGraphics.destroy();
+                if (rp.sprite) rp.sprite.destroy();
+            });
             if (this.socket) this.socket.close();
         });
     }
@@ -461,36 +507,85 @@ export class ExploracaoCombate extends Phaser.Scene {
     }
 
     spawnRemotePlayer(state) {
-        const sprite = this.add.rectangle(state.x, state.y, 40, 40, 0x0000ff);
+        let sprite;
+        if (this.textures.exists('player')) {
+            sprite = this.add.sprite(state.x, state.y, 'player');
+            if (this.anims.exists('player-idle-down')) {
+                sprite.play('player-idle-down');
+            }
+        } else {
+            sprite = this.add.rectangle(state.x, state.y, 40, 40, 0x0000ff);
+        }
+
         this.otherPlayers.set(state.id, {
-            sprite: sprite, targetX: state.x, targetY: state.y,
-            hp_atual: state.hp_atual, hp_max: state.hp_max, hpGraphics: this.add.graphics()
+            sprite: sprite,
+            targetX: state.x,
+            targetY: state.y,
+            hp_atual: state.hp_atual,
+            hp_max: state.hp_max,
+            hpGraphics: this.add.graphics(),
+            lastFacing: 'down',
+            lastFlipX: false
         });
     }
 
     spawnEnemy(state) {
         const isBoss = Boolean(state.is_boss || state.nome === 'Boss');
-        const cor = ENEMY_COLOR_BY_NOME[state.nome] ?? ENEMY_COLOR_FALLBACK;
-        const size = isBoss ? 60 : 30;
-        const sprite = this.add.rectangle(state.x, state.y, size, size, cor);
-        if (isBoss) {
-            sprite.setStrokeStyle(3, 0xffffff); // Borda branca para contraste máximo
+        const config = ENEMY_VISUAL_CONFIG[state.nome];
+        let sprite;
+
+        if (isBoss || !config || !this.textures.exists(config.texture)) {
+            // Boss ou fallback caso a textura não exista: mantém retângulo sólido
+            const cor = ENEMY_COLOR_BY_NOME[state.nome] ?? ENEMY_COLOR_FALLBACK;
+            const size = isBoss ? 60 : 30;
+            sprite = this.add.rectangle(state.x, state.y, size, size, cor);
+            if (isBoss) {
+                sprite.setStrokeStyle(3, 0xffffff); // Borda branca para contraste máximo
+            }
+        } else {
+            // Inimigo comum com sprite animado
+            sprite = this.add.sprite(state.x, state.y, config.texture);
+            if (config.tint) {
+                sprite.setTint(config.tint);
+            }
+            if (this.anims.exists(`${config.anim}-idle-down`)) {
+                sprite.play(`${config.anim}-idle-down`);
+            }
         }
+
         this.physics.add.existing(sprite);
         sprite.body.setImmovable(true); // O Cliente não empurra fisicamente o inimigo
+        if (config && sprite.body && typeof sprite.body.setSize === 'function' && !isBoss) {
+            sprite.body.setSize(config.bodySize, config.bodySize);
+        }
         sprite.serverId = state.id;
         this.enemiesGroup.add(sprite);
-        const nameOffsetY = isBoss ? -50 : -40;
+
+        const hpOffsetY = isBoss ? -38 : (config ? config.hpOffset : -25);
+        const nameOffsetY = isBoss ? -50 : (config ? config.nameOffset : -40);
+        const barWidth = isBoss ? 70 : (config ? config.barWidth : 30);
+
         const nameText = this.add.text(state.x, state.y + nameOffsetY, state.nome ?? '', {
             color: isBoss ? '#ffcc00' : '#ffffff',
             fontSize: isBoss ? '15px' : '12px',
             fontStyle: isBoss ? 'bold' : 'normal'
         }).setOrigin(0.5);
+
         this.enemyData.set(state.id, {
-            sprite: sprite, targetX: state.x, targetY: state.y,
-            hp_atual: state.hp_atual, hp_max: state.hp_max, hpGraphics: this.add.graphics(),
+            sprite: sprite,
+            targetX: state.x,
+            targetY: state.y,
+            hp_atual: state.hp_atual,
+            hp_max: state.hp_max,
+            hpGraphics: this.add.graphics(),
             nameText: nameText,
-            is_boss: isBoss
+            is_boss: isBoss,
+            animPrefix: config ? config.anim : null,
+            lastFacing: 'down',
+            lastFlipX: false,
+            barWidth: barWidth,
+            hpOffsetY: hpOffsetY,
+            nameOffsetY: nameOffsetY
         });
     }
 
@@ -522,6 +617,9 @@ export class ExploracaoCombate extends Phaser.Scene {
         if (!this.playerStats) return; // Espera o handshake do server
 
         // 1. Movimentação Local Predita (SÓ PERMITE SE NÃO ESTIVER EM KNOCKBACK NEM COM O INVENTÁRIO ABERTO)
+        let isMoving = false;
+        let moveDir = null;
+
         if (this.inventoryOpen) {
             this.player.body.setVelocity(0); // estático — zera até velocidade residual de knockback
         } else if (!this.player.invulnerable) {
@@ -532,15 +630,67 @@ export class ExploracaoCombate extends Phaser.Scene {
             const halfW = this.player.body.width / 2;
             const halfH = this.player.body.height / 2;
 
-            if (this.cursors.left.isDown && this.player.x > wb.x + halfW) this.player.body.setVelocityX(-300);
-            else if (this.cursors.right.isDown && this.player.x < wb.right - halfW) this.player.body.setVelocityX(300);
+            if (this.cursors.left.isDown && this.player.x > wb.x + halfW) {
+                this.player.body.setVelocityX(-300);
+                isMoving = true;
+                moveDir = 'left';
+            } else if (this.cursors.right.isDown && this.player.x < wb.right - halfW) {
+                this.player.body.setVelocityX(300);
+                isMoving = true;
+                moveDir = 'right';
+            }
 
-            if (this.cursors.up.isDown && this.player.y > wb.y + halfH) this.player.body.setVelocityY(-300);
-            else if (this.cursors.down.isDown && this.player.y < wb.bottom - halfH) this.player.body.setVelocityY(300);
+            if (this.cursors.up.isDown && this.player.y > wb.y + halfH) {
+                this.player.body.setVelocityY(-300);
+                isMoving = true;
+                if (!moveDir) moveDir = 'up';
+            } else if (this.cursors.down.isDown && this.player.y < wb.bottom - halfH) {
+                this.player.body.setVelocityY(300);
+                isMoving = true;
+                if (!moveDir) moveDir = 'down';
+            }
+        }
+
+        // Animação do Player (Passo 1 visual)
+        if (this.playerVisual && typeof this.playerVisual.play === 'function') {
+            let targetAnim = null;
+            if (isMoving && moveDir) {
+                if (moveDir === 'left') {
+                    this.playerFlipX = true;
+                    this.playerVisual.setFlipX(true);
+                    targetAnim = 'player-walk-side';
+                    this.playerLastFacing = 'side';
+                } else if (moveDir === 'right') {
+                    this.playerFlipX = false;
+                    this.playerVisual.setFlipX(false);
+                    targetAnim = 'player-walk-side';
+                    this.playerLastFacing = 'side';
+                } else if (moveDir === 'up') {
+                    this.playerFlipX = false;
+                    this.playerVisual.setFlipX(false);
+                    targetAnim = 'player-walk-up';
+                    this.playerLastFacing = 'up';
+                } else if (moveDir === 'down') {
+                    this.playerFlipX = false;
+                    this.playerVisual.setFlipX(false);
+                    targetAnim = 'player-walk-down';
+                    this.playerLastFacing = 'down';
+                }
+            } else {
+                this.playerVisual.setFlipX(this.playerFlipX);
+                targetAnim = `player-idle-${this.playerLastFacing}`;
+            }
+
+            if (targetAnim && this.anims.exists(targetAnim)) {
+                this.playerVisual.play(targetAnim, true);
+            }
         }
 
         // 2. Interpola Inimigos e Renderiza HP
         this.enemyData.forEach(e => {
+            const dx = e.targetX - e.sprite.x;
+            const dy = e.targetY - e.sprite.y;
+
             e.sprite.x = Phaser.Math.Linear(e.sprite.x, e.targetX, 0.15);
             e.sprite.y = Phaser.Math.Linear(e.sprite.y, e.targetY, 0.15);
             
@@ -549,12 +699,38 @@ export class ExploracaoCombate extends Phaser.Scene {
                 e.sprite.body.position.x = e.sprite.x - e.sprite.body.width / 2;
                 e.sprite.body.position.y = e.sprite.y - e.sprite.body.height / 2;
             }
+
+            // Animação de inimigo normal com sprite
+            if (e.animPrefix && typeof e.sprite.play === 'function') {
+                const distSq = dx * dx + dy * dy;
+                if (distSq > 1.0) { // Em movimento
+                    let dir = 'down';
+                    let flipX = false;
+                    if (Math.abs(dx) > Math.abs(dy)) {
+                        dir = 'side';
+                        flipX = (dx < 0);
+                    } else {
+                        dir = (dy < 0) ? 'up' : 'down';
+                        flipX = false;
+                    }
+                    e.lastFacing = dir;
+                    e.lastFlipX = flipX;
+                    e.sprite.setFlipX(flipX);
+                    const walkKey = `${e.animPrefix}-walk-${dir}`;
+                    if (this.anims.exists(walkKey)) {
+                        e.sprite.play(walkKey, true);
+                    }
+                } else { // Parado
+                    e.sprite.setFlipX(e.lastFlipX);
+                    const idleKey = `${e.animPrefix}-idle-${e.lastFacing}`;
+                    if (this.anims.exists(idleKey)) {
+                        e.sprite.play(idleKey, true);
+                    }
+                }
+            }
             
-            const barWidth = e.is_boss ? 70 : 30;
-            const hpOffsetY = e.is_boss ? -38 : -25;
-            const nameOffsetY = e.is_boss ? -50 : -40;
-            this.drawHpBar(e.hpGraphics, e.sprite.x, e.sprite.y + hpOffsetY, e.hp_atual, e.hp_max, barWidth);
-            e.nameText.setPosition(e.sprite.x, e.sprite.y + nameOffsetY);
+            this.drawHpBar(e.hpGraphics, e.sprite.x, e.sprite.y + (e.hpOffsetY ?? (e.is_boss ? -38 : -25)), e.hp_atual, e.hp_max, e.barWidth ?? (e.is_boss ? 70 : 30));
+            e.nameText.setPosition(e.sprite.x, e.sprite.y + (e.nameOffsetY ?? (e.is_boss ? -50 : -40)));
         });
 
         // 3. Interpola o jogador local para o que o jogador realmente vê
@@ -563,8 +739,40 @@ export class ExploracaoCombate extends Phaser.Scene {
 
         // 4. Interpola Jogadores Remotos e Renderiza HP
         this.otherPlayers.forEach(rp => {
+            const dx = rp.targetX - rp.sprite.x;
+            const dy = rp.targetY - rp.sprite.y;
+
             rp.sprite.x = Phaser.Math.Linear(rp.sprite.x, rp.targetX, 0.15);
             rp.sprite.y = Phaser.Math.Linear(rp.sprite.y, rp.targetY, 0.15);
+
+            if (typeof rp.sprite.play === 'function') {
+                const distSq = dx * dx + dy * dy;
+                if (distSq > 1.0) { // Remoto em movimento
+                    let dir = 'down';
+                    let flipX = false;
+                    if (Math.abs(dx) > Math.abs(dy)) {
+                        dir = 'side';
+                        flipX = (dx < 0);
+                    } else {
+                        dir = (dy < 0) ? 'up' : 'down';
+                        flipX = false;
+                    }
+                    rp.lastFacing = dir;
+                    rp.lastFlipX = flipX;
+                    rp.sprite.setFlipX(flipX);
+                    const walkKey = `player-walk-${dir}`;
+                    if (this.anims.exists(walkKey)) {
+                        rp.sprite.play(walkKey, true);
+                    }
+                } else { // Remoto parado
+                    rp.sprite.setFlipX(rp.lastFlipX);
+                    const idleKey = `player-idle-${rp.lastFacing}`;
+                    if (this.anims.exists(idleKey)) {
+                        rp.sprite.play(idleKey, true);
+                    }
+                }
+            }
+
             this.drawHpBar(rp.hpGraphics, rp.sprite.x, rp.sprite.y - 30, rp.hp_atual, rp.hp_max, 40);
         });
 

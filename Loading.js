@@ -1,3 +1,6 @@
+import { ensurePlayerAnimations } from './playerAnimations.js';
+import { ensureEnemyAnimations } from './enemyAnimations.js';
+
 export class Loading extends Phaser.Scene {
     constructor() {
         super('Loading');
@@ -29,7 +32,6 @@ export class Loading extends Phaser.Scene {
         caixaBarra.strokeRect(largura / 2 - 150, altura / 2 + 30, 300, 20);
 
         // EVENTOS REAIS DE CARREGAMENTO DO PHASER
-        // O Phaser dispara esse evento 'progress' automaticamente conforme baixa imagens/sons
         this.load.on('progress', function (valor) {
             textoPorcentagem.setText(parseInt(valor * 100) + '%');
             preenchimentoBarra.clear();
@@ -37,16 +39,63 @@ export class Loading extends Phaser.Scene {
             preenchimentoBarra.fillRect(largura / 2 - 146, altura / 2 + 34, 292 * valor, 12);
         });
 
-        // Como não temos arquivos pesados ainda, vamos forçar um carregamento falso (assets vazios)
-        // Só para você ver a barra enchendo na tela!
-        for (let i = 0; i < 50; i++) {
+        this.load.on('loaderror', (fileObj) => {
+            console.error('[Loading] ERRO AO CARREGAR ARQUIVO:', fileObj.key, fileObj.src);
+        });
+
+        // Garante que o sprite do player seja carregado se ainda não estiver em memória
+        if (!this.textures.exists('player')) {
+            console.log('[Loading] Carregando spritesheet player...');
+            this.load.spritesheet('player', 'assets/sprites/player.png', {
+                frameWidth: 48,
+                frameHeight: 48
+            });
+        }
+
+        if (!this.textures.exists('slime')) {
+            console.log('[Loading] Carregando spritesheet slime...');
+            this.load.spritesheet('slime', 'assets/sprites/slime.png', {
+                frameWidth: 32,
+                frameHeight: 32
+            });
+        }
+
+        if (!this.textures.exists('skeleton')) {
+            console.log('[Loading] Carregando spritesheet skeleton...');
+            this.load.spritesheet('skeleton', 'assets/sprites/skeleton.png', {
+                frameWidth: 48,
+                frameHeight: 48
+            });
+        }
+
+        if (!this.textures.exists('portal')) {
+            console.log('[Loading] Carregando spritesheet portal...');
+            this.load.spritesheet('portal', 'assets/sprites/portal.png', {
+                frameWidth: 192,
+                frameHeight: 112
+            });
+        }
+
+        // Carregamento falso para dar tempo da barra animar
+        for (let i = 0; i < 20; i++) {
             this.load.image('falso_pixel_' + i, 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==');
         }
     }
 
     create() {
+        ensurePlayerAnimations(this);
+        ensureEnemyAnimations(this);
+
+        if (!this.anims.exists('portal-loop') && this.textures.exists('portal')) {
+            this.anims.create({
+                key: 'portal-loop',
+                frames: this.anims.generateFrameNumbers('portal', { start: 0, end: 16 }),
+                frameRate: 10,
+                repeat: -1
+            });
+        }
+
         // Quando o preload termina (100%), o Phaser roda o create automaticamente.
-        // Aqui limpamos a memória visual e chamamos a próxima fase!
         this.time.delayedCall(500, () => {
             this.scene.start(this.proximoEstado);
         });
