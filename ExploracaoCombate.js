@@ -14,7 +14,8 @@ const ENEMY_COLOR_BY_NOME = {
     'Fraco': 0x00cc44, // verde
     'Medio': 0xffaa00, // amarelo/laranja
     'Forte': 0xff0000, // vermelho
-    'Elite': 0x9900ff  // roxo — raro (peso_spawn baixo, Passo 2a), mais durão e mais XP
+    'Elite': 0x9900ff, // roxo — raro (peso_spawn baixo, Passo 2a), mais durão e mais XP
+    'Boss':  0xff2200  // vermelho vivo / fogo contrastante com borda — P3 Sub-passo C1
 };
 const ENEMY_COLOR_FALLBACK = 0xffffff;
 const PORTAL_BOSS_ENTRY = { x: 300, y: 1000 };
@@ -468,17 +469,28 @@ export class ExploracaoCombate extends Phaser.Scene {
     }
 
     spawnEnemy(state) {
+        const isBoss = Boolean(state.is_boss || state.nome === 'Boss');
         const cor = ENEMY_COLOR_BY_NOME[state.nome] ?? ENEMY_COLOR_FALLBACK;
-        const sprite = this.add.rectangle(state.x, state.y, 30, 30, cor);
+        const size = isBoss ? 60 : 30;
+        const sprite = this.add.rectangle(state.x, state.y, size, size, cor);
+        if (isBoss) {
+            sprite.setStrokeStyle(3, 0xffffff); // Borda branca para contraste máximo
+        }
         this.physics.add.existing(sprite);
         sprite.body.setImmovable(true); // O Cliente não empurra fisicamente o inimigo
         sprite.serverId = state.id;
         this.enemiesGroup.add(sprite);
-        const nameText = this.add.text(state.x, state.y - 40, state.nome ?? '', { color: '#ffffff', fontSize: '12px' }).setOrigin(0.5);
+        const nameOffsetY = isBoss ? -50 : -40;
+        const nameText = this.add.text(state.x, state.y + nameOffsetY, state.nome ?? '', {
+            color: isBoss ? '#ffcc00' : '#ffffff',
+            fontSize: isBoss ? '15px' : '12px',
+            fontStyle: isBoss ? 'bold' : 'normal'
+        }).setOrigin(0.5);
         this.enemyData.set(state.id, {
             sprite: sprite, targetX: state.x, targetY: state.y,
             hp_atual: state.hp_atual, hp_max: state.hp_max, hpGraphics: this.add.graphics(),
-            nameText: nameText
+            nameText: nameText,
+            is_boss: isBoss
         });
     }
 
@@ -538,8 +550,11 @@ export class ExploracaoCombate extends Phaser.Scene {
                 e.sprite.body.position.y = e.sprite.y - e.sprite.body.height / 2;
             }
             
-            this.drawHpBar(e.hpGraphics, e.sprite.x, e.sprite.y - 25, e.hp_atual, e.hp_max, 30);
-            e.nameText.setPosition(e.sprite.x, e.sprite.y - 40);
+            const barWidth = e.is_boss ? 70 : 30;
+            const hpOffsetY = e.is_boss ? -38 : -25;
+            const nameOffsetY = e.is_boss ? -50 : -40;
+            this.drawHpBar(e.hpGraphics, e.sprite.x, e.sprite.y + hpOffsetY, e.hp_atual, e.hp_max, barWidth);
+            e.nameText.setPosition(e.sprite.x, e.sprite.y + nameOffsetY);
         });
 
         // 3. Interpola o jogador local para o que o jogador realmente vê

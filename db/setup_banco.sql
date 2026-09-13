@@ -245,13 +245,14 @@ INSERT INTO Itens (nome, descricao, localizacao, chance, tipo, bonus_dano, bonus
 -- experiencia_dropada aqui é multiplicador de XP, não XP fixo (ver comentário
 -- na CREATE TABLE mobs acima) — consumido só a partir do Passo 1c.
 -- peso_spawn é o peso relativo do sorteio ponderado (Passo 2b); peso total
--- dos 5 tipos = 95, Elite = ~5% de chance.
-INSERT INTO mobs (nome_inimigo, vida, defesa, ataque, experiencia_dropada, nivel, peso_spawn) VALUES
-('Comum', 50, 2, 15, 1.0, 1, 30),
-('Fraco', 70, 3, 18, 1.3, 1, 25),
-('Medio', 100, 4, 22, 1.6, 1, 20),
-('Forte', 140, 6, 28, 2.0, 1, 15),
-('Elite', 250, 10, 40, 3.5, 1, 5);
+-- dos 5 tipos comuns = 95, Elite = ~5% de chance. Boss tem peso 0 e is_boss=TRUE (P3 Sub-passo C1).
+INSERT INTO mobs (nome_inimigo, vida, defesa, ataque, experiencia_dropada, nivel, peso_spawn, is_boss) VALUES
+('Comum', 50, 2, 15, 1.0, 1, 30, FALSE),
+('Fraco', 70, 3, 18, 1.3, 1, 25, FALSE),
+('Medio', 100, 4, 22, 1.6, 1, 20, FALSE),
+('Forte', 140, 6, 28, 2.0, 1, 15, FALSE),
+('Elite', 250, 10, 40, 3.5, 1, 5, FALSE),
+('Boss', 1000, 15, 60, 5.0, 5, 0, TRUE);
 
 -- mob_drops: drops de teste (Loot & Inimigos, Passo 4a — valores provisórios do
 -- dono do projeto). Inimigo mais forte dropa com mais chance; Elite tem 2 linhas

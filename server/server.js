@@ -150,13 +150,14 @@ function rolarDrops(mob_id) {
 // número de 0 até a soma, e percorre acumulando peso até cruzar o número sorteado — o tipo
 // onde cruza é o escolhido. Tipos com peso maior saem mais (Comum), o Elite (peso baixo) é raro.
 function sortearTipoMob() {
-    const pesoTotal = MOBS_TIPOS.reduce((soma, tipo) => soma + tipo.peso_spawn, 0);
+    const tiposComuns = MOBS_TIPOS.filter(tipo => !tipo.is_boss && tipo.peso_spawn > 0);
+    const pesoTotal = tiposComuns.reduce((soma, tipo) => soma + tipo.peso_spawn, 0);
     let sorteio = Math.random() * pesoTotal;
-    for (const tipo of MOBS_TIPOS) {
+    for (const tipo of tiposComuns) {
         sorteio -= tipo.peso_spawn;
         if (sorteio < 0) return tipo;
     }
-    return MOBS_TIPOS[MOBS_TIPOS.length - 1];
+    return tiposComuns[tiposComuns.length - 1];
 }
 
 // Todo o bootstrap do servidor espera a tabela de nível e os tipos de mob carregarem antes de
@@ -306,6 +307,7 @@ function sendPortalFeedback(players, message) {
 function teleportGroupToArena(players) {
     for (const player of players) {
         player.zona = 'arena_boss';
+        player.xp_boss = 0; // Sub-passo C3: zera cofre de XP do boss ao entrar na arena
         player.x = PORTAL_BOSS_DESTINATION.x;
         player.y = PORTAL_BOSS_DESTINATION.y;
         player.vx = 0;
@@ -372,6 +374,36 @@ function spawnEnemy(x, y, vx, vy, tipo) {
     return gameState.enemies[id];
 }
 
+// Spawn dedicado do Boss na Arena (P3, Sub-passo C1):
+// Entidade persistente em gameState.enemies com is_boss: true, posicionada na arena (4000..6000)
+// e descolada do ponto de chegada do portal (5000, 5000) para evitar colisão instantânea no teleporte.
+function spawnBoss() {
+    const tipoBoss = MOBS_TIPOS.find(t => t.is_boss || t.nome === 'Boss');
+    if (!tipoBoss) {
+        console.error('[spawnBoss] Tipo de mob Boss não encontrado em MOBS_TIPOS!');
+        return null;
+    }
+    const id = 'boss_principal';
+    gameState.enemies[id] = {
+        id,
+        x: 5000,
+        y: 4750,
+        vx: 70,
+        vy: 70,
+        hp_atual: tipoBoss.vida,
+        hp_max: tipoBoss.vida,
+        dano_base: tipoBoss.ataque,
+        defesa_base: tipoBoss.defesa,
+        nome: tipoBoss.nome,
+        xp_multiplicador: tipoBoss.xp_multiplicador,
+        is_boss: true,
+        mob_id: tipoBoss.mob_id,
+        damageHistory: {}
+    };
+    console.log(`[BOSS] ${tipoBoss.nome} spawnado na arena em (${gameState.enemies[id].x}, ${gameState.enemies[id].y}) com HP ${tipoBoss.vida}`);
+    return gameState.enemies[id];
+}
+
 // População inicial: os mesmos 3 primeiros pontos fixos de sempre, com desvio de spawn.
 for (let i = 0; i < 3; i++) {
     const p = ENEMY_SPAWN_POINTS[i % ENEMY_SPAWN_POINTS.length];
@@ -379,6 +411,9 @@ for (let i = 0; i < 3; i++) {
     spawnEnemy(x, y, p.vx, p.vy, sortearTipoMob());
 }
 nextEnemySpawnPoint = 3 % ENEMY_SPAWN_POINTS.length; // respawn contínuo cicla a partir daqui
+
+// Boss persistente na Arena
+spawnBoss();
 
 wss.on('connection', (ws) => {
     console.log('[+] Conexão WebSocket estabelecida (aguardando join)');
@@ -482,7 +517,8 @@ wss.on('connection', (ws) => {
                     hp_atual: row.hp_atual,
                     hp_max: 0, dano_base: 0, defesa_base: 0, // recalculado logo abaixo
                     inventario: invRows,
-                    inventarioAberto: false
+                    inventarioAberto: false,
+                    xp_boss: 0
                 };
                 const player = gameState.players[personagemId];
                 playerSockets.set(personagemId, ws);
@@ -550,6 +586,12 @@ wss.on('connection', (ws) => {
             }
             // AÇÃO: Equipar/desequipar item do inventário
             else if (data.type === 'equip_item' || data.type === 'unequip_item') {
+                // Sub-passo C3: Congelamento de poder — bloqueia alteração de equipamento dentro da arena do Boss
+                if (player.zona === 'arena_boss') {
+                    console.log(`[EQUIP BLOQUEADO] Jogador ${personagemId} tentou alterar equipamento na arena do boss.`);
+                    return;
+                }
+
                 const querEquipar = data.type === 'equip_item';
                 const item = player.inventario.find(i => i.id === data.inventario_id);
 
@@ -594,6 +636,12 @@ wss.on('connection', (ws) => {
                     // Calculado ANTES de aplicar o dano, contra o HP que o inimigo tinha até agora.
                     const danoEfetivo = Math.min(danoNoEnemy, enemy.hp_atual);
 
+                    // Sub-passo C2: Memória de dano do Boss por jogador (usado futuramente no abate proporcional)
+                    if (enemy.is_boss) {
+                        if (!enemy.damageHistory) enemy.damageHistory = {};
+                        enemy.damageHistory[player.id] = (enemy.damageHistory[player.id] || 0) + danoEfetivo;
+                    }
+
                     enemy.hp_atual -= danoNoEnemy;
                     if (!invulneravel) {
                         const danoNoPlayer = Math.max(1, enemy.dano_base - player.defesa_base);
@@ -615,6 +663,13 @@ wss.on('connection', (ws) => {
                     // já chega como Number (convertido de DECIMAL no carregarMobsTipos do Passo 1b,
                     // única origem do campo — não há caminho onde ele seja string aqui).
                     if (enemy.hp_atual <= 0) {
+                        if (enemy.is_boss) {
+                            const damageLog = Object.entries(enemy.damageHistory || {})
+                                .map(([pId, dmg]) => `player_${pId}: ${dmg}`)
+                                .join(', ');
+                            console.log(`[BOSS DAMAGE] ${damageLog || 'nenhum dano registrado'}`);
+                        }
+
                         delete gameState.enemies[enemy.id];
                         broadcast({ type: 'enemy_died', enemyId: enemy.id, killerId: player.id });
 
@@ -646,12 +701,23 @@ wss.on('connection', (ws) => {
                             console.log(`[LOOT] enemy ${enemy.nome} (mob_id=${enemy.mob_id}) não dropou nada`);
                         }
                     }
-                    const xp = danoEfetivo * XP_POR_DANO * enemy.xp_multiplicador;
+                    const multXP = Number(enemy.xp_multiplicador) || 1;
+                    const xp = danoEfetivo * XP_POR_DANO * multXP;
                     if (xp > 0) {
-                        concederXP(player, xp).catch(err => console.error('[XP] Erro ao processar XP/nível:', err));
+                        if (enemy.is_boss) {
+                            // Sub-passo C3: Desvio do XP pro cofre (sem conceder XP real / subir de nível)
+                            player.xp_boss = (player.xp_boss || 0) + xp;
+                            console.log(`[BOSS XP COFRE] player_${player.id} +${xp.toFixed(1)} XP cofre (total: ${player.xp_boss.toFixed(1)})`);
+                        } else {
+                            concederXP(player, xp).catch(err => console.error('[XP] Erro ao processar XP/nível:', err));
+                        }
                     }
                     // Verifica morte do Jogador
                     if (player.hp_atual <= 0) {
+                        if (player.zona === 'arena_boss' && player.xp_boss > 0) {
+                            console.log(`[BOSS XP DESCARTE] player_${player.id} morreu na arena; ${player.xp_boss.toFixed(1)} XP do cofre descartado.`);
+                            player.xp_boss = 0;
+                        }
                         broadcast({ type: 'player_died', playerId: player.id });
                         // Marca o sinal transitório de respawn AQUI, no instante exato da morte —
                         // é isso que o próximo join vai consumir pra conceder invulnerabilidade
@@ -717,6 +783,17 @@ wss.on('connection', (ws) => {
                 const inArena = player.zona === 'arena_boss';
                 const alvoX = inArena ? 1000 : 5000;
                 const alvoY = inArena ? 1000 : 5000;
+
+                if (inArena) {
+                    // Sub-passo C3: Saindo da arena sem matar o boss descarta o cofre
+                    if (player.xp_boss > 0) {
+                        console.log(`[BOSS XP DESCARTE] player_${player.id} saiu da arena (debug TP); ${player.xp_boss.toFixed(1)} XP do cofre descartado.`);
+                    }
+                    player.xp_boss = 0;
+                } else {
+                    // Entrando na arena fresca: zera cofre
+                    player.xp_boss = 0;
+                }
 
                 // Atualiza servidor
                 player.x = alvoX;
@@ -814,9 +891,15 @@ setInterval(() => {
         e.x += e.vx * dt;
         e.y += e.vy * dt;
         
-        // Quica nas paredes do mapa normal (0 a 2000px).
-        if (e.x <= 15 || e.x >= 1985) e.vx *= -1;
-        if (e.y <= 15 || e.y >= 1985) e.vy *= -1;
+        if (e.is_boss) {
+            // Quica nas paredes da arena do boss (4000 a 6000px, com margem de 50px).
+            if (e.x <= 4050 || e.x >= 5950) e.vx *= -1;
+            if (e.y <= 4050 || e.y >= 5950) e.vy *= -1;
+        } else {
+            // Quica nas paredes do mapa normal (0 a 2000px).
+            if (e.x <= 15 || e.x >= 1985) e.vx *= -1;
+            if (e.y <= 15 || e.y >= 1985) e.vy *= -1;
+        }
     }
 
     processPortalChannel();
@@ -851,7 +934,8 @@ setInterval(() => {
     // vira no-op no tick, sem estado próprio pra desincronizar dos vários caminhos de
     // entrada/saída (join, morte em attack_enemy, ws.close).
     if (Object.keys(gameState.players).length === 0) return;
-    if (Object.keys(gameState.enemies).length >= ENEMY_POPULATION_CAP) return;
+    const comunsVivos = Object.values(gameState.enemies).filter(e => !e.is_boss).length;
+    if (comunsVivos >= ENEMY_POPULATION_CAP) return;
 
     const p = ENEMY_SPAWN_POINTS[nextEnemySpawnPoint % ENEMY_SPAWN_POINTS.length];
     nextEnemySpawnPoint++;
