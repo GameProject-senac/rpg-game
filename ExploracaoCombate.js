@@ -17,6 +17,9 @@ const ENEMY_COLOR_BY_NOME = {
     'Elite': 0x9900ff  // roxo — raro (peso_spawn baixo, Passo 2a), mais durão e mais XP
 };
 const ENEMY_COLOR_FALLBACK = 0xffffff;
+const PORTAL_BOSS_ENTRY = { x: 300, y: 1000 };
+const PORTAL_BOSS_RADIUS = 240;
+const PORTAL_BOSS_MIN_LEVEL = 3;
 
 export class ExploracaoCombate extends Phaser.Scene {
 
@@ -32,15 +35,32 @@ export class ExploracaoCombate extends Phaser.Scene {
         this.myId = null;
         this.physics.world.setBounds(0, 0, 2000, 2000);
         this.cameras.main.setBounds(0, 0, 2000, 2000);
+        this.cameras.main.setBackgroundColor('#0b1d3a');
 
         this.add.text(10, 10, 'SISTEMA ONLINE - ESC para voltar', { color: '#00ff00' }).setScrollFactor(0);
         // S4 (Round 2): indicador transitório de subida de nível — texto simples, some sozinho.
         this.levelUpText = this.add.text(10, 30, '', { color: '#00ffff', fontSize: '18px' }).setScrollFactor(0);
-
         this.player = this.add.rectangle(1000, 1000, 40, 40, 0x00ffff);
         this.physics.add.existing(this.player);
         this.player.body.setCollideWorldBounds(true);
         this.player.invulnerable = false;
+        this.player.setVisible(false);
+        this.playerVisual = this.add.rectangle(this.player.x, this.player.y, 40, 40, 0x00ffff);
+        this.portalState = { active: false, progress: 0, occupants: 0, required_level: PORTAL_BOSS_MIN_LEVEL };
+        this.portalVisual = this.add.rectangle(PORTAL_BOSS_ENTRY.x, PORTAL_BOSS_ENTRY.y, PORTAL_BOSS_RADIUS * 2, PORTAL_BOSS_RADIUS * 2, 0x00ff66, 0.12)
+            .setStrokeStyle(3, 0x00ff66);
+        this.portalLabel = this.add.text(PORTAL_BOSS_ENTRY.x, PORTAL_BOSS_ENTRY.y - PORTAL_BOSS_RADIUS - 20, 'PORTAL', {
+            color: '#00ff66',
+            fontSize: '18px',
+            backgroundColor: '#00000080',
+            padding: { x: 4, y: 2 }
+        }).setOrigin(0.5);
+        this.portalProgressText = this.add.text(PORTAL_BOSS_ENTRY.x, PORTAL_BOSS_ENTRY.y - PORTAL_BOSS_RADIUS - 42, `NÍVEL ${PORTAL_BOSS_MIN_LEVEL}+`, {
+            color: '#ffffff',
+            fontSize: '14px',
+            backgroundColor: '#00000080',
+            padding: { x: 4, y: 2 }
+        }).setOrigin(0.5);
         // Imunidade de respawn (Round 2, correção do congelamento de movimento): flag própria,
         // separada de `invulnerable` (knockback). NÃO gateia movimento nem o collider de ataque —
         // só a proteção contra dano é autoritária no servidor. Gancho reservado para feedback
@@ -48,13 +68,15 @@ export class ExploracaoCombate extends Phaser.Scene {
         this.player.respawnShield = false;
 
         this.playerHpGraphics = this.add.graphics();
+        // Registrado após o POST_UPDATE da física: a barra acompanha a posição final do sprite.
+        this.events.on('postupdate', this.renderPlayerHp, this);
         // S5 (Round 2): lerp fracionário + roundPixels produzia tremida vertical (câmera
         // perseguindo por uma faixa grande, arredondando scroll fracionário a cada frame).
         // Segue direto (lerp=1, default) e mantém roundPixels — nitidez pronta para quando a
         // arte real (Godot) chegar; suavização fica pra decidir com o sprite real em mãos.
-        this.cameras.main.startFollow(this.player, true);
+        this.cameras.main.startFollow(this.playerVisual, false);
 
-        // Throttle de envio de player_move: 60Hz de update() -> no máximo 20Hz de rede (fase2_spec.md Pacote 3).
+        // Throttle de player_move: update() acompanha o render, rede limitada a ~20Hz.
         this.moveSendAccumulator = 0;
         this.MOVE_SEND_INTERVAL_MS = 50;
         this.movePayload = { type: 'player_move', x: 0, y: 0, vx: 0, vy: 0 };
@@ -105,6 +127,13 @@ export class ExploracaoCombate extends Phaser.Scene {
         this.input.keyboard.on('keydown-TAB', this.onInventoryToggle);
         this.game.events.on('inventory_toggle', this.onInventoryToggle);
 
+        // Debug tp boss (Passo 3a)
+        this.input.keyboard.on('keydown-T', () => {
+            if (this.socket && this.socket.readyState === WebSocket.OPEN) {
+                sendMessage(this.socket, { type: 'debug_tp_boss' });
+            }
+        });
+
         this.initMultiplayer();
 
         // UIScene (inventário) roda em paralelo — só desenha o que o servidor manda via EventBus.
@@ -115,12 +144,17 @@ export class ExploracaoCombate extends Phaser.Scene {
         this.game.events.on('inventory_action', this.onInventoryAction);
 
         this.events.once('shutdown', () => {
+            this.events.off('postupdate', this.renderPlayerHp, this);
             this.input.keyboard.removeAllListeners('keydown-ESC');
+            this.input.keyboard.removeAllListeners('keydown-T');
             this.input.keyboard.off('keydown-TAB', this.onInventoryToggle);
             this.game.events.off('inventory_toggle', this.onInventoryToggle);
             this.game.events.off('inventory_action', this.onInventoryAction);
             this.scene.stop('UIScene');
             this.playerHpGraphics.destroy();
+            this.portalVisual.destroy();
+            this.portalLabel.destroy();
+            this.portalProgressText.destroy();
             this.enemyData.forEach(data => { data.hpGraphics.destroy(); data.nameText.destroy(); });
             this.otherPlayers.forEach(rp => rp.hpGraphics.destroy());
             if (this.socket) this.socket.close();
@@ -158,7 +192,9 @@ export class ExploracaoCombate extends Phaser.Scene {
             stats_updated: this.handleStatsUpdated.bind(this),
             state_update: this.handleStateUpdate.bind(this),
             item_dropped: this.handleItemDropped.bind(this),
-            item_removed: this.handleItemRemoved.bind(this)
+            item_removed: this.handleItemRemoved.bind(this),
+            portal_feedback: this.handlePortalFeedback.bind(this),
+            force_teleport: this.handleForceTeleport.bind(this)
         };
 
         this.socket.onmessage = (event) => {
@@ -178,6 +214,7 @@ export class ExploracaoCombate extends Phaser.Scene {
         this.myId = data.id;
         this.playerStats = data.state.players[this.myId];
         this.playerStats.xp_proximo_nivel = data.xp_proximo_nivel;
+        this.playerVisual.setPosition(this.player.x, this.player.y);
 
         for (const pid in data.state.players) {
             if (pid !== this.myId) this.spawnRemotePlayer(data.state.players[pid]);
@@ -358,6 +395,11 @@ export class ExploracaoCombate extends Phaser.Scene {
                 e.targetY = data.enemies[eid].y;
             }
         }
+
+        if (data.portal) {
+            this.portalState = data.portal;
+            this.refreshPortalUi();
+        }
     }
 
     // ITENS NO CHÃO (Passo 5b)
@@ -373,9 +415,50 @@ export class ExploracaoCombate extends Phaser.Scene {
         }
     }
 
+    handleForceTeleport(data) {
+        // Salto autoritário: tira o player local de onde estava e força nova posição
+        this.player.setPosition(data.x, data.y);
+        this.playerVisual.setPosition(data.x, data.y);
+
+        // Os destinos 1000 (mapa normal) e 5000 (arena) ficam separados pelo corte 3000.
+        if (data.x >= 3000 && data.y >= 3000) {
+            this.physics.world.setBounds(4000, 4000, 2000, 2000);
+            this.cameras.main.setBounds(4000, 4000, 2000, 2000);
+        } else {
+            this.physics.world.setBounds(0, 0, 2000, 2000);
+            this.cameras.main.setBounds(0, 0, 2000, 2000);
+        }
+
+        // Força envio imediato para alinhar o servidor sem esperar o próximo tick de 50ms
+        this.movePayload.x = this.player.x;
+        this.movePayload.y = this.player.y;
+        this.movePayload.vx = 0;
+        this.movePayload.vy = 0;
+        if (this.socket && this.socket.readyState === WebSocket.OPEN) {
+            sendMessage(this.socket, this.movePayload);
+        }
+    }
+
     // ─────────────────────────────────────────────────────────────────
     // FUNÇÕES DE SPAWN (RENDERIZAÇÃO LOCAL)
     // ─────────────────────────────────────────────────────────────────
+    handlePortalFeedback(data) {
+        this.game.events.emit('portal_feedback_ui', {
+            message: data.message ?? 'Nível insuficiente para entrar na arena.'
+        });
+    }
+
+    refreshPortalUi() {
+        if (!this.portalState) return;
+        const progressPct = Math.max(0, Math.min(100, Math.round((this.portalState.progress ?? 0) * 100)));
+        this.portalLabel.setText(this.portalState.active ? 'CANALIZANDO' : 'PORTAL');
+        this.portalProgressText.setText(
+            this.portalState.active
+                ? `${progressPct}%  |  nível ${PORTAL_BOSS_MIN_LEVEL}+`
+                : `nível ${PORTAL_BOSS_MIN_LEVEL}+`
+        );
+    }
+
     spawnRemotePlayer(state) {
         const sprite = this.add.rectangle(state.x, state.y, 40, 40, 0x0000ff);
         this.otherPlayers.set(state.id, {
@@ -421,7 +504,7 @@ export class ExploracaoCombate extends Phaser.Scene {
     }
 
     // ─────────────────────────────────────────────────────────────────
-    // LOOP PRINCIPAL (60Hz de render; envio de rede throttled a 20Hz)
+    // LOOP PRINCIPAL (cadência do render; envio de rede throttled a 20Hz)
     // ─────────────────────────────────────────────────────────────────
     update(time, delta) {
         if (!this.playerStats) return; // Espera o handshake do server
@@ -431,16 +514,20 @@ export class ExploracaoCombate extends Phaser.Scene {
             this.player.body.setVelocity(0); // estático — zera até velocidade residual de knockback
         } else if (!this.player.invulnerable) {
             this.player.body.setVelocity(0);
-            if (this.cursors.left.isDown) this.player.body.setVelocityX(-300);
-            else if (this.cursors.right.isDown) this.player.body.setVelocityX(300);
-            if (this.cursors.up.isDown) this.player.body.setVelocityY(-300);
-            else if (this.cursors.down.isDown) this.player.body.setVelocityY(300);
+
+            // Usa o bounds dinâmico real da engine de física para evitar o cabo-de-guerra visual
+            const wb = this.physics.world.bounds;
+            const halfW = this.player.body.width / 2;
+            const halfH = this.player.body.height / 2;
+
+            if (this.cursors.left.isDown && this.player.x > wb.x + halfW) this.player.body.setVelocityX(-300);
+            else if (this.cursors.right.isDown && this.player.x < wb.right - halfW) this.player.body.setVelocityX(300);
+
+            if (this.cursors.up.isDown && this.player.y > wb.y + halfH) this.player.body.setVelocityY(-300);
+            else if (this.cursors.down.isDown && this.player.y < wb.bottom - halfH) this.player.body.setVelocityY(300);
         }
 
-        // 2. Renderiza Próprio HP
-        this.drawHpBar(this.playerHpGraphics, this.player.x, this.player.y - 30, this.playerStats.hp_atual, this.playerStats.hp_max, 40);
-
-        // 3. Interpola Inimigos e Renderiza HP
+        // 2. Interpola Inimigos e Renderiza HP
         this.enemyData.forEach(e => {
             e.sprite.x = Phaser.Math.Linear(e.sprite.x, e.targetX, 0.15);
             e.sprite.y = Phaser.Math.Linear(e.sprite.y, e.targetY, 0.15);
@@ -455,6 +542,10 @@ export class ExploracaoCombate extends Phaser.Scene {
             e.nameText.setPosition(e.sprite.x, e.sprite.y - 40);
         });
 
+        // 3. Interpola o jogador local para o que o jogador realmente vê
+        this.playerVisual.x = Phaser.Math.Linear(this.playerVisual.x, this.player.x, 0.5);
+        this.playerVisual.y = Phaser.Math.Linear(this.playerVisual.y, this.player.y, 0.5);
+
         // 4. Interpola Jogadores Remotos e Renderiza HP
         this.otherPlayers.forEach(rp => {
             rp.sprite.x = Phaser.Math.Linear(rp.sprite.x, rp.targetX, 0.15);
@@ -462,7 +553,7 @@ export class ExploracaoCombate extends Phaser.Scene {
             this.drawHpBar(rp.hpGraphics, rp.sprite.x, rp.sprite.y - 30, rp.hp_atual, rp.hp_max, 40);
         });
 
-        // 5. Envia Atualização (throttled a ~20Hz, payload reutilizado — zero alocação por frame)
+        // 5. Envia Atualização (throttled a ~20Hz, payload reutilizado)
         this.moveSendAccumulator += delta;
         if (this.moveSendAccumulator >= this.MOVE_SEND_INTERVAL_MS) {
             this.moveSendAccumulator -= this.MOVE_SEND_INTERVAL_MS;
@@ -474,6 +565,11 @@ export class ExploracaoCombate extends Phaser.Scene {
                 sendMessage(this.socket, this.movePayload);
             }
         }
+    }
+
+    renderPlayerHp() {
+        if (!this.playerStats) return;
+        this.drawHpBar(this.playerHpGraphics, this.playerVisual.x, this.playerVisual.y - 30, this.playerStats.hp_atual, this.playerStats.hp_max, 40);
     }
 
     drawHpBar(graphics, x, y, hp, maxHp, width) {

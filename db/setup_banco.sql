@@ -77,6 +77,7 @@ CREATE TABLE mobs (
     -- XP precisa de Number(...) explícito antes de multiplicar, senão vira
     -- concatenação de string / NaN.
     experiencia_dropada DECIMAL(4,2) DEFAULT 0.00,
+    is_boss BOOLEAN DEFAULT FALSE,
     nivel INT DEFAULT 1,
     -- peso_spawn: Loot & Inimigos Passo 2a. Peso relativo de sorteio (maior =
     -- mais frequente); consumido pelo sorteio ponderado do Passo 2b. Fica no

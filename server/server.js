@@ -28,6 +28,12 @@ const BUFF_DANO = 5;
 const BUFF_DEFESA = 2;
 const XP_POR_DANO = 0.1; // XP = dano_efetivo × esta constante, pra TODO golpe (sem pico de abate — decisão do dono, comuns)
 
+// Zonas do Jogo e Limites Autoritários (Sub-passo A, Peça 2)
+const GAME_ZONES = {
+    'mapa_normal': { minX: 0, maxX: 2000, minY: 0, maxY: 2000 },
+    'arena_boss':  { minX: 4000, maxX: 6000, minY: 4000, maxY: 6000 }
+};
+
 // Deriva os atributos efetivos (hp_max/dano_base/defesa_base) a partir do molde da classe + buff de nível.
 // Usado tanto no carregamento (join) quanto na subida de nível.
 function calcularAtributosEfetivos(classe, nivel) {
@@ -82,7 +88,7 @@ async function carregarTabelaNivel() {
 // number sem precisar de Number(...), confirmado no carregamento (Passo 2b).
 const MOBS_TIPOS = [];
 async function carregarMobsTipos() {
-    const [rows] = await pool.query('SELECT id, nome_inimigo, vida, ataque, defesa, experiencia_dropada, nivel, peso_spawn FROM mobs');
+    const [rows] = await pool.query('SELECT id, nome_inimigo, vida, ataque, defesa, experiencia_dropada, is_boss, nivel, peso_spawn FROM mobs');
     for (const r of rows) {
         MOBS_TIPOS.push({
             mob_id: r.id,
@@ -91,6 +97,7 @@ async function carregarMobsTipos() {
             ataque: r.ataque,
             defesa: r.defesa,
             xp_multiplicador: Number(r.experiencia_dropada),
+            is_boss: Boolean(r.is_boss),
             nivel: r.nivel,
             peso_spawn: r.peso_spawn
         });
@@ -180,6 +187,7 @@ let dropIdCounter = 0;
 
 // Trava de sessão em memória: personagem_id ativos no momento (efêmera, não persiste).
 const activeSessions = new Set();
+const playerSockets = new Map();
 
 // Sinal transitório de respawn (mesmo padrão de `activeSessions`, chave = personagem_id):
 // populado no INSTANTE da morte, consumido (removido) no PRÓXIMO join daquele personagem.
@@ -216,6 +224,14 @@ const ENEMY_SPAWN_POINTS = [
 const ENEMY_POPULATION_CAP = 7;
 let nextEnemySpawnPoint = 0;
 
+// Portal do Boss (Sub-passo B): ponto fixo no mapa normal, com canalização autoritária.
+const PORTAL_BOSS_ENTRY = { x: 300, y: 1000 };
+const PORTAL_BOSS_DESTINATION = { x: 5000, y: 5000 };
+const PORTAL_BOSS_RADIUS = 240;
+const PORTAL_BOSS_CHANNEL_MS = 4000;
+const PORTAL_BOSS_MIN_LEVEL = 3;
+let portalChannelMs = 0;
+
 // Desvio de spawn (Round 2 → confirmado em campo no A2, ver roadmap_game.md): com só 4 pontos
 // fixos e teto 7, do 5º inimigo em diante o ciclo reusa coordenadas exatas de um já vivo — e o
 // ponto fixo também pode cair em cima de um jogador. ENEMY_SPAWN_CLEARANCE é o raio (px) que
@@ -251,6 +267,93 @@ function resolveSpawnPosition(anchor) {
     };
 }
 
+function isPlayerInsidePortal(player) {
+    if (!player || player.zona !== 'mapa_normal' || player.hp_atual <= 0) return false;
+    const dx = player.x - PORTAL_BOSS_ENTRY.x;
+    const dy = player.y - PORTAL_BOSS_ENTRY.y;
+    return Math.hypot(dx, dy) <= PORTAL_BOSS_RADIUS;
+}
+
+function getPlayersInsidePortal() {
+    return Object.values(gameState.players).filter(isPlayerInsidePortal);
+}
+
+function getPortalSnapshot() {
+    return {
+        x: PORTAL_BOSS_ENTRY.x,
+        y: PORTAL_BOSS_ENTRY.y,
+        radius: PORTAL_BOSS_RADIUS,
+        progress: portalChannelMs / PORTAL_BOSS_CHANNEL_MS,
+        active: portalChannelMs > 0,
+        required_level: PORTAL_BOSS_MIN_LEVEL,
+        occupants: getPlayersInsidePortal().length
+    };
+}
+
+function sendPortalFeedback(players, message) {
+    for (const player of players) {
+        const ws = playerSockets.get(player.id);
+        if (ws && ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({
+                type: 'portal_feedback',
+                message,
+                required_level: PORTAL_BOSS_MIN_LEVEL
+            }));
+        }
+    }
+}
+
+function teleportGroupToArena(players) {
+    for (const player of players) {
+        player.zona = 'arena_boss';
+        player.x = PORTAL_BOSS_DESTINATION.x;
+        player.y = PORTAL_BOSS_DESTINATION.y;
+        player.vx = 0;
+        player.vy = 0;
+
+        const ws = playerSockets.get(player.id);
+        if (ws && ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({
+                type: 'force_teleport',
+                x: PORTAL_BOSS_DESTINATION.x,
+                y: PORTAL_BOSS_DESTINATION.y,
+                zona: 'arena_boss'
+            }));
+        }
+    }
+}
+
+function broadcastWorldState() {
+    broadcast({
+        type: 'state_update',
+        players: gameState.players,
+        enemies: gameState.enemies,
+        portal: getPortalSnapshot()
+    });
+}
+
+function processPortalChannel() {
+    const playersInside = getPlayersInsidePortal();
+
+    if (playersInside.length === 0) {
+        portalChannelMs = 0;
+        return;
+    }
+
+    portalChannelMs = Math.min(PORTAL_BOSS_CHANNEL_MS, portalChannelMs + TICK_RATE);
+    if (portalChannelMs < PORTAL_BOSS_CHANNEL_MS) return;
+
+    const underLevel = playersInside.filter(player => player.nivel < PORTAL_BOSS_MIN_LEVEL);
+    if (underLevel.length > 0) {
+        sendPortalFeedback(playersInside, 'Nível insuficiente para entrar na arena.');
+        portalChannelMs = 0;
+        return;
+    }
+
+    teleportGroupToArena(playersInside);
+    portalChannelMs = 0;
+}
+
 // 1. Gerador de Inimigos (Server-side) — recebe o tipo sorteado (MOBS_TIPOS via sortearTipoMob),
 // não mais hp/dano/defesa soltos. nome e xp_multiplicador acompanham o inimigo pro Passo 1c (XP
 // por tipo) e 1d (client exibir); xp_multiplicador ainda não é lido em lugar nenhum.
@@ -263,6 +366,7 @@ function spawnEnemy(x, y, vx, vy, tipo) {
         hp_atual: tipo.vida, hp_max: tipo.vida,
         dano_base: tipo.ataque, defesa_base: tipo.defesa,
         nome: tipo.nome, xp_multiplicador: tipo.xp_multiplicador,
+        is_boss: tipo.is_boss,
         mob_id: tipo.mob_id
     };
     return gameState.enemies[id];
@@ -358,14 +462,22 @@ wss.on('connection', (ws) => {
                 personagemId = requestedId;
                 activeSessions.add(personagemId);
 
+                // Retorna ao centro se a posição salva pertence à arena ou ao antigo mapa ampliado.
+                const boundsNormal = GAME_ZONES.mapa_normal;
+                const posInvalida = row.posicao_x < boundsNormal.minX || row.posicao_x > boundsNormal.maxX ||
+                    row.posicao_y < boundsNormal.minY || row.posicao_y > boundsNormal.maxY;
+                const spawnX = posInvalida ? 1000 : row.posicao_x;
+                const spawnY = posInvalida ? 1000 : row.posicao_y;
+
                 gameState.players[personagemId] = {
                     id: personagemId,
                     nome: row.nome,
                     classe: row.classe,
                     nivel: row.nivel,
-                    experiencia: Number(row.experiencia), // mysql2 retorna DECIMAL como string por padrão — sem isso, += vira concatenação (era INT antes da migração, nunca deu problema)
-                    x: row.posicao_x,
-                    y: row.posicao_y,
+                    experiencia: Number(row.experiencia), // mysql2 retorna DECIMAL como string por padrão
+                    zona: 'mapa_normal', // Sempre inicia fora da arena
+                    x: spawnX,
+                    y: spawnY,
                     vx: 0, vy: 0,
                     hp_atual: row.hp_atual,
                     hp_max: 0, dano_base: 0, defesa_base: 0, // recalculado logo abaixo
@@ -373,6 +485,7 @@ wss.on('connection', (ws) => {
                     inventarioAberto: false
                 };
                 const player = gameState.players[personagemId];
+                playerSockets.set(personagemId, ws);
                 recalcularAtributosEfetivos(player);
 
                 // Faxina (Round 1): hp_atual <= 0 no banco significa que o personagem morreu em
@@ -415,9 +528,15 @@ wss.on('connection', (ws) => {
 
             if (!player || player.hp_atual <= 0) return; // Mortos não agem
 
+            // MOVIMENTO (com trava autoritária baseada na zona atual do jogador)
             if (data.type === 'player_move') {
                 if (player.inventarioAberto) return; // Estático enquanto o inventário está aberto
-                player.x = data.x; player.y = data.y;
+
+                // Validação de fronteira autoritária
+                const bounds = GAME_ZONES[player.zona] || GAME_ZONES['mapa_normal'];
+                player.x = Math.max(bounds.minX, Math.min(data.x, bounds.maxX));
+                player.y = Math.max(bounds.minY, Math.min(data.y, bounds.maxY));
+
                 player.vx = data.vx; player.vy = data.vy;
             }
             // AÇÃO: Abrir/fechar o inventário — enquanto aberto, o jogador fica estático e imune
@@ -592,6 +711,24 @@ wss.on('connection', (ws) => {
                     console.error('[pickup_item] Erro ao persistir coleta de item no banco:', dbErr);
                 }
             }
+            // AÇÃO: Comando de debug para teleportar para o Boss (Passo 3a)
+            else if (data.type === 'debug_tp_boss') {
+                // Teleporta de/para a arena e transiciona a zona
+                const inArena = player.zona === 'arena_boss';
+                const alvoX = inArena ? 1000 : 5000;
+                const alvoY = inArena ? 1000 : 5000;
+
+                // Atualiza servidor
+                player.x = alvoX;
+                player.y = alvoY;
+                player.zona = inArena ? 'mapa_normal' : 'arena_boss';
+
+                // Força o cliente a se reposicionar
+                ws.send(JSON.stringify({ type: 'force_teleport', x: alvoX, y: alvoY, zona: player.zona }));
+
+                // Avisa os outros do novo local imediatamente
+                broadcastWorldState();
+            }
         } catch (e) {
             console.error('Erro:', e);
         }
@@ -605,6 +742,7 @@ wss.on('connection', (ws) => {
 
             const player = gameState.players[personagemId];
             if (player) liberarPersonagem(player);
+            playerSockets.delete(personagemId);
 
             broadcast({ type: 'player_left', id: personagemId });
         } else {
@@ -676,20 +814,13 @@ setInterval(() => {
         e.x += e.vx * dt;
         e.y += e.vy * dt;
         
-        // Quica nas paredes (Mundo de 0 a 2000px)
+        // Quica nas paredes do mapa normal (0 a 2000px).
         if (e.x <= 15 || e.x >= 1985) e.vx *= -1;
         if (e.y <= 15 || e.y >= 1985) e.vy *= -1;
     }
 
-    const payload = JSON.stringify({
-        type: 'state_update',
-        players: gameState.players,
-        enemies: gameState.enemies
-    });
-
-    wss.clients.forEach(client => {
-        if (client.readyState === WebSocket.OPEN) client.send(payload);
-    });
+    processPortalChannel();
+    broadcastWorldState();
 }, TICK_RATE);
 
 // ────────────────────────────────────────────────────────

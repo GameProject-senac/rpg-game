@@ -44,6 +44,12 @@ export class UIScene extends Phaser.Scene {
         // preenchimento redesenhado a cada stats_updated com a fração experiencia/xp_proximo_nivel.
         this.xpBarBg = this.add.rectangle(10, 72, 200, 10, 0x333333).setOrigin(0, 0).setScrollFactor(0);
         this.xpBarFill = this.add.rectangle(10, 72, 0, 10, 0x00ff00).setOrigin(0, 0).setScrollFactor(0);
+        this.portalFeedbackText = this.add.text(10, 92, '', {
+            color: '#ffcc00',
+            fontSize: '16px',
+            backgroundColor: '#00000080',
+            padding: { x: 4, y: 2 }
+        }).setScrollFactor(0);
 
         // Ícone/barra sempre visível — clique alterna a tela (mesma ação abre e fecha).
         this.toggleIcon = this.add.rectangle(10, 850, 140, 30, 0x2244aa)
@@ -57,19 +63,23 @@ export class UIScene extends Phaser.Scene {
         this.onInventoryUpdate = (data) => this.renderInventory(data.itens);
         this.onStatsUpdated = (data) => this.renderStats(data);
         this.onInventoryScreenState = ({ open }) => this.setOpen(open);
+        this.onPortalFeedbackUi = (data) => this.showPortalFeedback(data);
 
         this.game.events.on('inventory_update', this.onInventoryUpdate);
         this.game.events.on('stats_updated', this.onStatsUpdated);
         this.game.events.on('inventory_screen_state', this.onInventoryScreenState);
+        this.game.events.on('portal_feedback_ui', this.onPortalFeedbackUi);
 
         this.events.once('shutdown', () => {
             this.game.events.off('inventory_update', this.onInventoryUpdate);
             this.game.events.off('stats_updated', this.onStatsUpdated);
             this.game.events.off('inventory_screen_state', this.onInventoryScreenState);
+            this.game.events.off('portal_feedback_ui', this.onPortalFeedbackUi);
             this.slotsContainer.destroy();
             this.tabButtonsContainer.destroy();
             this.frameBg.destroy();
             this.emBreveText.destroy();
+            this.portalFeedbackText.destroy();
             this.toggleIcon.destroy();
             this.toggleLabel.destroy();
         });
@@ -168,5 +178,18 @@ export class UIScene extends Phaser.Scene {
         // Nível máximo (xp_proximo_nivel null): barra cheia, sem divisão por zero.
         const fracao = stats.xp_proximo_nivel ? Phaser.Math.Clamp(stats.experiencia / stats.xp_proximo_nivel, 0, 1) : 1;
         this.xpBarFill.width = 200 * fracao;
+    }
+
+    showPortalFeedback(data) {
+        this.portalFeedbackText.setText(data?.message ?? '');
+        if (this.portalFeedbackClearTimer) {
+            this.portalFeedbackClearTimer.remove(false);
+        }
+        if (!data?.message) {
+            return;
+        }
+        this.portalFeedbackClearTimer = this.time.delayedCall(2000, () => {
+            this.portalFeedbackText.setText('');
+        });
     }
 }

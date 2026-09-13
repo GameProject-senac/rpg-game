@@ -12,7 +12,8 @@ const config = {
     width: 1920,
     height: 920,
     backgroundColor: '#0a0a0a',
-    physics: { default: 'arcade', arcade: { gravity: { y: 0 } } },
+    // Integra a física a cada frame pelo tempo decorrido, inclusive em monitores de 120 Hz.
+    physics: { default: 'arcade', arcade: { gravity: { y: 0 }, fixedStep: false } },
     // A ordem aqui não dita quem roda primeiro (o Phaser pega a primeira da lista),
     // mas cadastra todas no sistema FSM.
     scene: [Boot, Preload, MainMenu, SelecaoPersonagem, Loading, HubCentral, ExploracaoCombate, UIScene]
