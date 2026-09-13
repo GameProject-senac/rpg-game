@@ -307,7 +307,14 @@ function sendPortalFeedback(players, message) {
 function teleportGroupToArena(players) {
     for (const player of players) {
         player.zona = 'arena_boss';
-        player.xp_boss = 0; // Sub-passo C3: zera cofre de XP do boss ao entrar na arena
+        // Sub-passo C4: Se o jogador já tinha cofre congelado nesta tentativa, restaura; senão nasce 0
+        if (cofresBossCongelados.has(player.id)) {
+            player.xp_boss = cofresBossCongelados.get(player.id);
+            cofresBossCongelados.delete(player.id);
+            console.log(`[BOSS COFRE DESCONGELADO] player_${player.id} voltou à arena via portal; cofre restaurado com ${player.xp_boss.toFixed(1)} XP.`);
+        } else {
+            player.xp_boss = 0;
+        }
         player.x = PORTAL_BOSS_DESTINATION.x;
         player.y = PORTAL_BOSS_DESTINATION.y;
         player.vx = 0;
@@ -372,6 +379,48 @@ function spawnEnemy(x, y, vx, vy, tipo) {
         mob_id: tipo.mob_id
     };
     return gameState.enemies[id];
+}
+
+// Sub-passo C4/D: Controle de Respawn do Boss e Reset da Arena
+// Limites de respawn do Boss após derrota (em ms). Valores curtos para teste de campo (produção: 600000 e 900000)
+const BOSS_RESPAWN_MIN_MS = 15000; // 15s (produção: 10 * 60 * 1000 = 600000)
+const BOSS_RESPAWN_MAX_MS = 25000; // 25s (produção: 15 * 60 * 1000 = 900000)
+let bossRespawnAt = null;
+const cofresBossCongelados = new Map(); // chave: personagem_id, valor: xp_boss acumulado
+
+function verificarResetArena(idIgnorado = null) {
+    const vivosNaArena = Object.values(gameState.players).filter(
+        p => p.zona === 'arena_boss' && p.hp_atual > 0 && p.id !== idIgnorado
+    );
+
+    if (vivosNaArena.length === 0) {
+        // Arena esvaziou!
+        const boss = gameState.enemies['boss_principal'];
+        if (boss && boss.hp_atual > 0) {
+            boss.hp_atual = boss.hp_max;
+            boss.damageHistory = {};
+            console.log(`[BOSS RESET] Arena esvaziou. Boss resetado com HP 100% (${boss.hp_max}) e damageHistory limpo.`);
+            broadcast({
+                type: 'combat_event',
+                enemyId: boss.id,
+                playerId: null,
+                enemy_hp: boss.hp_atual,
+                player_hp: null
+            });
+        }
+
+        // Descarta todos os cofres (ativos e congelados) por tentativa fracassada
+        if (cofresBossCongelados.size > 0) {
+            console.log(`[BOSS RESET] Arena esvaziou: descartando ${cofresBossCongelados.size} cofre(s) congelado(s).`);
+            cofresBossCongelados.clear();
+        }
+        for (const pid in gameState.players) {
+            const p = gameState.players[pid];
+            if (p.xp_boss > 0) {
+                p.xp_boss = 0;
+            }
+        }
+    }
 }
 
 // Spawn dedicado do Boss na Arena (P3, Sub-passo C1):
@@ -662,12 +711,72 @@ wss.on('connection', (ws) => {
                     // (Loot & Inimigos, Passo 1c — decisão do dono do projeto). enemy.xp_multiplicador
                     // já chega como Number (convertido de DECIMAL no carregarMobsTipos do Passo 1b,
                     // única origem do campo — não há caminho onde ele seja string aqui).
+                    const multXP = Number(enemy.xp_multiplicador) || 1;
+                    const xp = danoEfetivo * XP_POR_DANO * multXP;
+                    if (xp > 0) {
+                        if (enemy.is_boss) {
+                            // Sub-passo C3: Desvio do XP pro cofre (sem conceder XP real / subir de nível)
+                            player.xp_boss = (player.xp_boss || 0) + xp;
+                            console.log(`[BOSS XP COFRE] player_${player.id} +${xp.toFixed(1)} XP cofre (total: ${player.xp_boss.toFixed(1)})`);
+                        } else {
+                            concederXP(player, xp).catch(err => console.error('[XP] Erro ao processar XP/nível:', err));
+                        }
+                    }
+
                     if (enemy.hp_atual <= 0) {
                         if (enemy.is_boss) {
                             const damageLog = Object.entries(enemy.damageHistory || {})
                                 .map(([pId, dmg]) => `player_${pId}: ${dmg}`)
                                 .join(', ');
                             console.log(`[BOSS DAMAGE] ${damageLog || 'nenhum dano registrado'}`);
+
+                            // Sub-passo D: PAGAMENTO DOS COFRES DA VITÓRIA
+                            // Paga o cofre individual de cada jogador presente na arena
+                            // (inclui quem morreu no mesmo frame no golpe final — regra da vitória simultânea)
+                            for (const pId in gameState.players) {
+                                const p = gameState.players[pId];
+                                if (p.zona === 'arena_boss' && p.xp_boss > 0) {
+                                    const xpGanha = Number(p.xp_boss);
+                                    p.xp_boss = 0; // Zera imediatamente
+                                    const nivelAntes = p.nivel;
+                                    await concederXP(p, xpGanha);
+                                    console.log(`[BOSS VITÓRIA] player_${p.id} recebeu ${xpGanha.toFixed(1)} XP (nível ${nivelAntes} -> ${p.nivel}).`);
+                                }
+                            }
+
+                            // Descarta cofres congelados de quem morreu ANTES e não retornou a tempo
+                            if (cofresBossCongelados.size > 0) {
+                                console.log(`[BOSS VITÓRIA] ${cofresBossCongelados.size} cofre(s) congelado(s) descartado(s) (jogadores ausentes na morte do boss).`);
+                                cofresBossCongelados.clear();
+                            }
+
+                            // Volta automática ao matar: teleporta todos os jogadores presentes vivos de volta pra base
+                            for (const pId in gameState.players) {
+                                const p = gameState.players[pId];
+                                if (p.zona === 'arena_boss' && p.hp_atual > 0) {
+                                    p.x = 1000;
+                                    p.y = 1000;
+                                    p.zona = 'mapa_normal';
+                                    const ws = playerSockets.get(p.id);
+                                    if (ws && ws.readyState === WebSocket.OPEN) {
+                                        ws.send(JSON.stringify({
+                                            type: 'force_teleport',
+                                            x: 1000,
+                                            y: 1000,
+                                            zona: 'mapa_normal'
+                                        }));
+                                    }
+                                }
+                            }
+                            broadcastWorldState();
+                            console.log('[BOSS VITÓRIA] Jogadores presentes na arena teleportados de volta para a base (1000, 1000).');
+
+                            // Agendamento de respawn aleatório entre MIN e MAX
+                            const respawnDelay = Math.floor(
+                                BOSS_RESPAWN_MIN_MS + Math.random() * (BOSS_RESPAWN_MAX_MS - BOSS_RESPAWN_MIN_MS)
+                            );
+                            bossRespawnAt = Date.now() + respawnDelay;
+                            console.log(`[BOSS MORTO] Boss derrotado! Respawn aleatório agendado para daqui a ${(respawnDelay / 1000).toFixed(1)}s.`);
                         }
 
                         delete gameState.enemies[enemy.id];
@@ -701,23 +810,28 @@ wss.on('connection', (ws) => {
                             console.log(`[LOOT] enemy ${enemy.nome} (mob_id=${enemy.mob_id}) não dropou nada`);
                         }
                     }
-                    const multXP = Number(enemy.xp_multiplicador) || 1;
-                    const xp = danoEfetivo * XP_POR_DANO * multXP;
-                    if (xp > 0) {
-                        if (enemy.is_boss) {
-                            // Sub-passo C3: Desvio do XP pro cofre (sem conceder XP real / subir de nível)
-                            player.xp_boss = (player.xp_boss || 0) + xp;
-                            console.log(`[BOSS XP COFRE] player_${player.id} +${xp.toFixed(1)} XP cofre (total: ${player.xp_boss.toFixed(1)})`);
-                        } else {
-                            concederXP(player, xp).catch(err => console.error('[XP] Erro ao processar XP/nível:', err));
-                        }
-                    }
                     // Verifica morte do Jogador
                     if (player.hp_atual <= 0) {
-                        if (player.zona === 'arena_boss' && player.xp_boss > 0) {
-                            console.log(`[BOSS XP DESCARTE] player_${player.id} morreu na arena; ${player.xp_boss.toFixed(1)} XP do cofre descartado.`);
+                        const mortoId = player.id;
+                        const estavaNaArena = player.zona === 'arena_boss';
+
+                        if (estavaNaArena && player.xp_boss > 0) {
+                            // Sub-passo C4: Checa se ainda há outros jogadores vivos na arena
+                            const outrosVivos = Object.values(gameState.players).filter(
+                                p => p.zona === 'arena_boss' && p.hp_atual > 0 && p.id !== mortoId
+                            );
+
+                            if (outrosVivos.length > 0) {
+                                // A luta continua: cofre fica congelado aguardando reentrada
+                                cofresBossCongelados.set(mortoId, player.xp_boss);
+                                console.log(`[BOSS COFRE CONGELADO] player_${mortoId} morreu; ${player.xp_boss.toFixed(1)} XP guardado aguardando reentrada.`);
+                            } else {
+                                // Era o último na arena: descarta o cofre
+                                console.log(`[BOSS XP DESCARTE] player_${mortoId} morreu (último na arena); ${player.xp_boss.toFixed(1)} XP do cofre descartado.`);
+                            }
                             player.xp_boss = 0;
                         }
+
                         broadcast({ type: 'player_died', playerId: player.id });
                         // Marca o sinal transitório de respawn AQUI, no instante exato da morte —
                         // é isso que o próximo join vai consumir pra conceder invulnerabilidade
@@ -728,6 +842,11 @@ wss.on('connection', (ws) => {
                         // precisa rodar antes de zerar personagemId, senão perdemos a referência.
                         liberarPersonagem(player);
                         personagemId = null;
+
+                        // Sub-passo C4: Se estava na arena, verifica se ela esvaziou para resetar boss/cofres
+                        if (estavaNaArena) {
+                            verificarResetArena(mortoId);
+                        }
                     }
                 }
             }
@@ -785,20 +904,28 @@ wss.on('connection', (ws) => {
                 const alvoY = inArena ? 1000 : 5000;
 
                 if (inArena) {
-                    // Sub-passo C3: Saindo da arena sem matar o boss descarta o cofre
+                    // Sub-passo C4: Saindo da arena via tecla T — descarta o cofre
                     if (player.xp_boss > 0) {
                         console.log(`[BOSS XP DESCARTE] player_${player.id} saiu da arena (debug TP); ${player.xp_boss.toFixed(1)} XP do cofre descartado.`);
                     }
                     player.xp_boss = 0;
+                    player.x = alvoX;
+                    player.y = alvoY;
+                    player.zona = 'mapa_normal';
+                    verificarResetArena(player.id);
                 } else {
-                    // Entrando na arena fresca: zera cofre
-                    player.xp_boss = 0;
+                    // Entrando na arena: restaura se tinha congelado, senão nasce 0
+                    if (cofresBossCongelados.has(player.id)) {
+                        player.xp_boss = cofresBossCongelados.get(player.id);
+                        cofresBossCongelados.delete(player.id);
+                        console.log(`[BOSS COFRE DESCONGELADO] player_${player.id} voltou à arena (debug TP); cofre restaurado com ${player.xp_boss.toFixed(1)} XP.`);
+                    } else {
+                        player.xp_boss = 0;
+                    }
+                    player.x = alvoX;
+                    player.y = alvoY;
+                    player.zona = 'arena_boss';
                 }
-
-                // Atualiza servidor
-                player.x = alvoX;
-                player.y = alvoY;
-                player.zona = inArena ? 'mapa_normal' : 'arena_boss';
 
                 // Força o cliente a se reposicionar
                 ws.send(JSON.stringify({ type: 'force_teleport', x: alvoX, y: alvoY, zona: player.zona }));
@@ -818,10 +945,22 @@ wss.on('connection', (ws) => {
             console.log(`[-] Personagem Desconectado: ${personagemId}`);
 
             const player = gameState.players[personagemId];
-            if (player) liberarPersonagem(player);
+            const estavaNaArena = player && player.zona === 'arena_boss';
+            const desconectadoId = personagemId;
+
+            if (player) {
+                if (estavaNaArena && player.xp_boss > 0) {
+                    player.xp_boss = 0;
+                }
+                liberarPersonagem(player);
+            }
             playerSockets.delete(personagemId);
 
             broadcast({ type: 'player_left', id: personagemId });
+
+            if (estavaNaArena) {
+                verificarResetArena(desconectadoId);
+            }
         } else {
             console.log('[-] Conexão encerrada antes de qualquer join (ou já liberada por morte).');
         }
@@ -833,7 +972,7 @@ wss.on('connection', (ws) => {
 // `experiencia` é XP TOTAL acumulado da carreira do personagem (nunca subtraído — table_nivel
 // guarda limiares cumulativos, não custo incremental por nível, ver roadmap_game.md).
 async function concederXP(player, quantidade) {
-    player.experiencia += quantidade;
+    player.experiencia = Number(player.experiencia) + Number(quantidade);
 
     let subiuNivel = false;
     let proximoCusto = TABELA_NIVEL.get(player.nivel + 1);
@@ -949,7 +1088,7 @@ setInterval(() => {
 }, ENEMY_RESPAWN_INTERVAL);
 
 // ────────────────────────────────────────────────────────
-// SWEEP DE ITENS NO CHÃO (Expiração após 45s)
+// SWEEP DE ITENS NO CHÃO (Expiração após 45s) E RESPAWN DO BOSS (Sub-passo C4)
 // ────────────────────────────────────────────────────────
 setInterval(() => {
     const now = Date.now();
@@ -959,6 +1098,16 @@ setInterval(() => {
             console.log(`[SWEEP] Item ${item.nome} (${dropId}) expirou e foi removido do mapa.`);
             delete gameState.itensNoChao[dropId];
             broadcast({ type: 'item_removed', dropId, reason: 'expired' });
+        }
+    }
+
+    // Sub-passo C4: Sweep de Respawn do Boss (não mexe nos cofres de XP)
+    if (bossRespawnAt && now >= bossRespawnAt) {
+        bossRespawnAt = null;
+        const novoBoss = spawnBoss();
+        if (novoBoss) {
+            broadcast({ type: 'enemy_spawned', enemy: novoBoss });
+            console.log(`[BOSS RESPAWN] Boss respawnou na arena com HP cheio (${novoBoss.hp_atual}).`);
         }
     }
 }, 1000);
