@@ -53,6 +53,25 @@ export class ExploracaoCombate extends Phaser.Scene {
         this.cameras.main.setBounds(0, 0, 2000, 2000);
         this.cameras.main.setBackgroundColor('#0b1d3a');
 
+        // Piso/cenário visual do mapa padrão (Tiled, reconstruído de mapa.tscn): grid 104x64
+        // tiles de 16px = 1664x1024px, cabe inteiro dentro do mundo autoritativo 2000x2000
+        // (server.js GAME_ZONES.mapa_normal) — puramente cosmético, server.js não muda em nada.
+        // 5 camadas na ordem de empilhamento original do Godot; todas atrás do player por ora
+        // (no Godot, "props2"/"arvores" ficavam à frente do personagem — efeito de copa de
+        // árvore cobrindo o jogador; não replicado ainda, ver observação ao usuário).
+        const mapaNormal = this.make.tilemap({ key: 'mapa-normal' });
+        const tilesetGrass = mapaNormal.addTilesetImage('Grass', 'tileset-grass');
+        const tilesetProps = mapaNormal.addTilesetImage('Props', 'tileset-props');
+        const tilesetPlants = mapaNormal.addTilesetImage('Plants', 'tileset-plants');
+        const todosTilesets = [tilesetGrass, tilesetProps, tilesetPlants];
+        // Depths negativos: garante que ficam atrás do portal (depth 1) e do player (depth 5),
+        // que são criados depois, sem depender da ordem de inserção pra desempate.
+        mapaNormal.createLayer('chao', todosTilesets, 0, 0).setDepth(-5);
+        mapaNormal.createLayer('props', todosTilesets, 0, 0).setDepth(-4);
+        mapaNormal.createLayer('props2', todosTilesets, 0, 0).setDepth(-3);
+        mapaNormal.createLayer('arvores 2', todosTilesets, 0, 0).setDepth(-2);
+        mapaNormal.createLayer('arvores', todosTilesets, 0, 0).setDepth(-1);
+
         this.add.text(10, 10, 'SISTEMA ONLINE - ESC para voltar', { color: '#00ff00' }).setScrollFactor(0);
         // S4 (Round 2): indicador transitório de subida de nível — texto simples, some sozinho.
         this.levelUpText = this.add.text(10, 30, '', { color: '#00ffff', fontSize: '18px' }).setScrollFactor(0);

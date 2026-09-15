@@ -40,6 +40,15 @@ export class Preload extends Phaser.Scene {
             frameWidth: 192,
             frameHeight: 112
         });
+
+        // Mapa padrão (exportado do Godot via Tiled): 5 camadas (chao, props, props2,
+        // "arvores 2", arvores) sobre 3 atlas reais. Reconstruído a partir de mapa.tscn
+        // porque a 1ª exportação (commit "mapa tmj") só trouxe a camada chao e com o atlas
+        // errado (Plants.png) e tile size errado (32 em vez de 16) — causava os buracos.
+        this.load.tilemapTiledJSON('mapa-normal', 'assets/maps/mapa.tmj');
+        this.load.image('tileset-grass', 'assets/tilesets/Grass.png');
+        this.load.image('tileset-props', 'assets/tilesets/Props.png');
+        this.load.image('tileset-plants', 'assets/tilesets/Plants.png');
     }
 
     create() {
