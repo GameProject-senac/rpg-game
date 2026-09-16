@@ -6,6 +6,7 @@
 import { SERVER_URL, sendMessage } from './networkConfig.js';
 import { ensurePlayerAnimations } from './playerAnimations.js';
 import { ensureEnemyAnimations } from './enemyAnimations.js';
+import { ensureWarriorAnimations } from './warriorAnimations.js';
 
 // Mapeamento visual de inimigos com sprites animados e tint leve para diferenciação de tier
 const ENEMY_VISUAL_CONFIG = {
@@ -40,9 +41,10 @@ export class ExploracaoCombate extends Phaser.Scene {
     }
 
     create() {
-        // Garante que as animações globais do player e inimigos existam mesmo após recarregamento
+        // Garante que as animações globais do player, inimigos e guerreiro existam mesmo após recarregamento
         ensurePlayerAnimations(this);
         ensureEnemyAnimations(this);
+        ensureWarriorAnimations(this);
 
         // Causa A (teste de campo Fase 2): playerStats/myId NÃO eram resetados aqui, então
         // sobreviviam zumbis a um scene.restart() — o guard `if (!this.playerStats) return`
@@ -94,6 +96,8 @@ export class ExploracaoCombate extends Phaser.Scene {
         }
         this.playerLastFacing = 'down'; // 'down' | 'up' | 'side'
         this.playerFlipX = false;
+        this.playerClasse = 'comum';
+        this.playerActionLock = false; // Trava para não sobrescrever animação de ataque/skill com walk/idle
         this.portalState = { active: false, progress: 0, occupants: 0, required_level: PORTAL_BOSS_MIN_LEVEL };
         if (this.textures.exists('portal')) {
             if (!this.anims.exists('portal-loop')) {
@@ -159,6 +163,9 @@ export class ExploracaoCombate extends Phaser.Scene {
             if (!this.player.invulnerable && this.socket && this.socket.readyState === WebSocket.OPEN) {
                 sendMessage(this.socket, { type: 'attack_enemy', enemyId: enemySprite.serverId });
 
+                // Dispara animação de ataque se for Guerreiro
+                this.triggerPlayerAttack();
+
                 // Cooldown local para não flodar a rede
                 this.player.invulnerable = true;
                 this.time.delayedCall(500, () => this.player.invulnerable = false);
@@ -178,7 +185,32 @@ export class ExploracaoCombate extends Phaser.Scene {
         });
 
         this.cursors = this.input.keyboard.createCursorKeys();
+        this.wasd = this.input.keyboard.addKeys({
+            up: Phaser.Input.Keyboard.KeyCodes.W,
+            down: Phaser.Input.Keyboard.KeyCodes.S,
+            left: Phaser.Input.Keyboard.KeyCodes.A,
+            right: Phaser.Input.Keyboard.KeyCodes.D
+        });
         this.input.keyboard.once('keydown-ESC', () => this.scene.start('Loading', { destino: 'HubCentral' }));
+
+        // Ataque manual (ESPAÇO) e Habilidades do Guerreiro (1 a 5, sem conflito com WASD)
+        this.onKeySpace = () => this.handleManualAttack();
+        this.input.keyboard.on('keydown-SPACE', this.onKeySpace);
+
+        this.onKey1 = () => this.handleWarriorSkill('decisive');
+        this.input.keyboard.on('keydown-ONE', this.onKey1);
+
+        this.onKey2 = () => this.handleWarriorSkill('judgement');
+        this.input.keyboard.on('keydown-TWO', this.onKey2);
+
+        this.onKey3 = () => this.handleWarriorSkill('demacian');
+        this.input.keyboard.on('keydown-THREE', this.onKey3);
+
+        this.onKey4 = () => this.handleWarriorSkill('taunt');
+        this.input.keyboard.on('keydown-FOUR', this.onKey4);
+
+        this.onKey5 = () => this.handleWarriorSkill('dance');
+        this.input.keyboard.on('keydown-FIVE', this.onKey5);
 
         // Tela de inventário (Passo 1, Round 3): abre/fecha com TAB ou clique no ícone da UIScene
         // (evento 'inventory_toggle'). Enquanto aberta, o jogador fica estático — a imunidade real
@@ -211,6 +243,12 @@ export class ExploracaoCombate extends Phaser.Scene {
             this.input.keyboard.removeAllListeners('keydown-ESC');
             this.input.keyboard.removeAllListeners('keydown-T');
             this.input.keyboard.off('keydown-TAB', this.onInventoryToggle);
+            this.input.keyboard.off('keydown-SPACE', this.onKeySpace);
+            this.input.keyboard.off('keydown-ONE', this.onKey1);
+            this.input.keyboard.off('keydown-TWO', this.onKey2);
+            this.input.keyboard.off('keydown-THREE', this.onKey3);
+            this.input.keyboard.off('keydown-FOUR', this.onKey4);
+            this.input.keyboard.off('keydown-FIVE', this.onKey5);
             this.game.events.off('inventory_toggle', this.onInventoryToggle);
             this.game.events.off('inventory_action', this.onInventoryAction);
             this.scene.stop('UIScene');
@@ -218,6 +256,7 @@ export class ExploracaoCombate extends Phaser.Scene {
             this.portalVisual.destroy();
             this.portalLabel.destroy();
             this.portalProgressText.destroy();
+            if (this.actionFeedbackText) this.actionFeedbackText.destroy();
             this.enemyData.forEach(data => { data.hpGraphics.destroy(); data.nameText.destroy(); });
             this.otherPlayers.forEach(rp => {
                 rp.hpGraphics.destroy();
@@ -281,6 +320,7 @@ export class ExploracaoCombate extends Phaser.Scene {
         this.playerStats = data.state.players[this.myId];
         this.playerStats.xp_proximo_nivel = data.xp_proximo_nivel;
         this.playerVisual.setPosition(this.player.x, this.player.y);
+        this.configurePlayerVisualForClass(this.playerStats.classe);
 
         for (const pid in data.state.players) {
             if (pid !== this.myId) this.spawnRemotePlayer(data.state.players[pid]);
@@ -527,19 +567,33 @@ export class ExploracaoCombate extends Phaser.Scene {
 
     spawnRemotePlayer(state) {
         let sprite;
-        if (this.textures.exists('player')) {
+        const classe = (state.classe || '').toLowerCase();
+        const isWarrior = classe === 'guerreiro';
+
+        if (isWarrior && this.textures.exists('warrior-idle')) {
+            sprite = this.add.sprite(state.x, state.y, 'warrior-idle');
+            sprite.setOrigin(0.5, 0.62);
+            sprite.setDepth(5);
+            if (this.anims.exists('warrior-idle')) {
+                sprite.play('warrior-idle');
+            }
+        } else if (this.textures.exists('player')) {
             sprite = this.add.sprite(state.x, state.y, 'player');
+            sprite.setOrigin(0.5, 0.5);
+            sprite.setDepth(5);
             if (this.anims.exists('player-idle-down')) {
                 sprite.play('player-idle-down');
             }
         } else {
             sprite = this.add.rectangle(state.x, state.y, 40, 40, 0x0000ff);
+            sprite.setDepth(5);
         }
 
         this.otherPlayers.set(state.id, {
             sprite: sprite,
             targetX: state.x,
             targetY: state.y,
+            classe: classe,
             hp_atual: state.hp_atual,
             hp_max: state.hp_max,
             hpGraphics: this.add.graphics(),
@@ -649,59 +703,88 @@ export class ExploracaoCombate extends Phaser.Scene {
             const halfW = this.player.body.width / 2;
             const halfH = this.player.body.height / 2;
 
-            if (this.cursors.left.isDown && this.player.x > wb.x + halfW) {
+            const isLeft = Boolean(this.cursors.left.isDown || (this.wasd && this.wasd.left.isDown));
+            const isRight = Boolean(this.cursors.right.isDown || (this.wasd && this.wasd.right.isDown));
+            const isUp = Boolean(this.cursors.up.isDown || (this.wasd && this.wasd.up.isDown));
+            const isDown = Boolean(this.cursors.down.isDown || (this.wasd && this.wasd.down.isDown));
+
+            if (isLeft && this.player.x > wb.x + halfW) {
                 this.player.body.setVelocityX(-300);
                 isMoving = true;
                 moveDir = 'left';
-            } else if (this.cursors.right.isDown && this.player.x < wb.right - halfW) {
+            } else if (isRight && this.player.x < wb.right - halfW) {
                 this.player.body.setVelocityX(300);
                 isMoving = true;
                 moveDir = 'right';
             }
 
-            if (this.cursors.up.isDown && this.player.y > wb.y + halfH) {
+            if (isUp && this.player.y > wb.y + halfH) {
                 this.player.body.setVelocityY(-300);
                 isMoving = true;
                 if (!moveDir) moveDir = 'up';
-            } else if (this.cursors.down.isDown && this.player.y < wb.bottom - halfH) {
+            } else if (isDown && this.player.y < wb.bottom - halfH) {
                 this.player.body.setVelocityY(300);
                 isMoving = true;
                 if (!moveDir) moveDir = 'down';
             }
         }
 
-        // Animação do Player (Passo 1 visual)
+        // Animação do Player (Passo 1 visual + Suporte a Classe Guerreiro)
         if (this.playerVisual && typeof this.playerVisual.play === 'function') {
-            let targetAnim = null;
-            if (isMoving && moveDir) {
-                if (moveDir === 'left') {
-                    this.playerFlipX = true;
-                    this.playerVisual.setFlipX(true);
-                    targetAnim = 'player-walk-side';
-                    this.playerLastFacing = 'side';
-                } else if (moveDir === 'right') {
-                    this.playerFlipX = false;
-                    this.playerVisual.setFlipX(false);
-                    targetAnim = 'player-walk-side';
-                    this.playerLastFacing = 'side';
-                } else if (moveDir === 'up') {
-                    this.playerFlipX = false;
-                    this.playerVisual.setFlipX(false);
-                    targetAnim = 'player-walk-up';
-                    this.playerLastFacing = 'up';
-                } else if (moveDir === 'down') {
-                    this.playerFlipX = false;
-                    this.playerVisual.setFlipX(false);
-                    targetAnim = 'player-walk-down';
-                    this.playerLastFacing = 'down';
+            if (this.playerClasse === 'guerreiro') {
+                if (isMoving) {
+                    // Movimentação cancela qualquer trava residual de ação
+                    this.playerActionLock = false;
+                    if (moveDir === 'left') {
+                        this.playerFlipX = false; // Pose base do sprite olha para a esquerda
+                        this.playerVisual.setFlipX(false);
+                    } else if (moveDir === 'right') {
+                        this.playerFlipX = true; // Espelhado olha para a direita
+                        this.playerVisual.setFlipX(true);
+                    } else {
+                        this.playerVisual.setFlipX(this.playerFlipX);
+                    }
+                    if (this.anims.exists('warrior-run')) {
+                        this.playerVisual.play('warrior-run', true);
+                    }
+                } else if (!this.playerActionLock) {
+                    this.playerVisual.setFlipX(this.playerFlipX);
+                    if (this.anims.exists('warrior-idle')) {
+                        this.playerVisual.play('warrior-idle', true);
+                    }
                 }
             } else {
-                this.playerVisual.setFlipX(this.playerFlipX);
-                targetAnim = `player-idle-${this.playerLastFacing}`;
-            }
+                let targetAnim = null;
+                if (isMoving && moveDir) {
+                    if (moveDir === 'left') {
+                        this.playerFlipX = true;
+                        this.playerVisual.setFlipX(true);
+                        targetAnim = 'player-walk-side';
+                        this.playerLastFacing = 'side';
+                    } else if (moveDir === 'right') {
+                        this.playerFlipX = false;
+                        this.playerVisual.setFlipX(false);
+                        targetAnim = 'player-walk-side';
+                        this.playerLastFacing = 'side';
+                    } else if (moveDir === 'up') {
+                        this.playerFlipX = false;
+                        this.playerVisual.setFlipX(false);
+                        targetAnim = 'player-walk-up';
+                        this.playerLastFacing = 'up';
+                    } else if (moveDir === 'down') {
+                        this.playerFlipX = false;
+                        this.playerVisual.setFlipX(false);
+                        targetAnim = 'player-walk-down';
+                        this.playerLastFacing = 'down';
+                    }
+                } else {
+                    this.playerVisual.setFlipX(this.playerFlipX);
+                    targetAnim = `player-idle-${this.playerLastFacing}`;
+                }
 
-            if (targetAnim && this.anims.exists(targetAnim)) {
-                this.playerVisual.play(targetAnim, true);
+                if (targetAnim && this.anims.exists(targetAnim)) {
+                    this.playerVisual.play(targetAnim, true);
+                }
             }
         }
 
@@ -766,33 +849,50 @@ export class ExploracaoCombate extends Phaser.Scene {
 
             if (typeof rp.sprite.play === 'function') {
                 const distSq = dx * dx + dy * dy;
-                if (distSq > 1.0) { // Remoto em movimento
-                    let dir = 'down';
-                    let flipX = false;
-                    if (Math.abs(dx) > Math.abs(dy)) {
-                        dir = 'side';
-                        flipX = (dx < 0);
+                if (rp.classe === 'guerreiro') {
+                    if (distSq > 1.0) {
+                        const flipX = (dx < 0);
+                        rp.lastFlipX = flipX;
+                        rp.sprite.setFlipX(flipX);
+                        if (this.anims.exists('warrior-run')) {
+                            rp.sprite.play('warrior-run', true);
+                        }
                     } else {
-                        dir = (dy < 0) ? 'up' : 'down';
-                        flipX = false;
+                        rp.sprite.setFlipX(rp.lastFlipX);
+                        if (this.anims.exists('warrior-idle')) {
+                            rp.sprite.play('warrior-idle', true);
+                        }
                     }
-                    rp.lastFacing = dir;
-                    rp.lastFlipX = flipX;
-                    rp.sprite.setFlipX(flipX);
-                    const walkKey = `player-walk-${dir}`;
-                    if (this.anims.exists(walkKey)) {
-                        rp.sprite.play(walkKey, true);
-                    }
-                } else { // Remoto parado
-                    rp.sprite.setFlipX(rp.lastFlipX);
-                    const idleKey = `player-idle-${rp.lastFacing}`;
-                    if (this.anims.exists(idleKey)) {
-                        rp.sprite.play(idleKey, true);
+                } else {
+                    if (distSq > 1.0) { // Remoto em movimento
+                        let dir = 'down';
+                        let flipX = false;
+                        if (Math.abs(dx) > Math.abs(dy)) {
+                            dir = 'side';
+                            flipX = (dx < 0);
+                        } else {
+                            dir = (dy < 0) ? 'up' : 'down';
+                            flipX = false;
+                        }
+                        rp.lastFacing = dir;
+                        rp.lastFlipX = flipX;
+                        rp.sprite.setFlipX(flipX);
+                        const walkKey = `player-walk-${dir}`;
+                        if (this.anims.exists(walkKey)) {
+                            rp.sprite.play(walkKey, true);
+                        }
+                    } else { // Remoto parado
+                        rp.sprite.setFlipX(rp.lastFlipX);
+                        const idleKey = `player-idle-${rp.lastFacing}`;
+                        if (this.anims.exists(idleKey)) {
+                            rp.sprite.play(idleKey, true);
+                        }
                     }
                 }
             }
 
-            this.drawHpBar(rp.hpGraphics, rp.sprite.x, rp.sprite.y - 30, rp.hp_atual, rp.hp_max, 40);
+            const hpYOffset = rp.classe === 'guerreiro' ? -85 : -30;
+            this.drawHpBar(rp.hpGraphics, rp.sprite.x, rp.sprite.y + hpYOffset, rp.hp_atual, rp.hp_max, 40);
         });
 
         // 5. Envia Atualização (throttled a ~20Hz, payload reutilizado)
@@ -811,7 +911,8 @@ export class ExploracaoCombate extends Phaser.Scene {
 
     renderPlayerHp() {
         if (!this.playerStats) return;
-        this.drawHpBar(this.playerHpGraphics, this.playerVisual.x, this.playerVisual.y - 30, this.playerStats.hp_atual, this.playerStats.hp_max, 40);
+        const hpYOffset = this.playerClasse === 'guerreiro' ? -85 : -30;
+        this.drawHpBar(this.playerHpGraphics, this.playerVisual.x, this.playerVisual.y + hpYOffset, this.playerStats.hp_atual, this.playerStats.hp_max, 40);
     }
 
     drawHpBar(graphics, x, y, hp, maxHp, width) {
@@ -824,5 +925,135 @@ export class ExploracaoCombate extends Phaser.Scene {
         const color = percent > 0.5 ? 0x00ff00 : (percent > 0.25 ? 0xffff00 : 0xff0000);
         graphics.fillStyle(color, 1);
         graphics.fillRect(bgX, y, width * percent, 6);
+    }
+
+    configurePlayerVisualForClass(classe) {
+        this.playerClasse = (classe || '').toLowerCase();
+        if (this.playerClasse === 'guerreiro') {
+            if (this.textures.exists('warrior-idle')) {
+                this.playerVisual.setTexture('warrior-idle');
+                this.playerVisual.setOrigin(0.5, 0.62);
+                if (this.anims.exists('warrior-idle')) {
+                    this.playerVisual.play('warrior-idle');
+                }
+            }
+        } else {
+            if (this.textures.exists('player')) {
+                this.playerVisual.setTexture('player');
+                this.playerVisual.setOrigin(0.5, 0.5);
+                if (this.anims.exists('player-idle-down')) {
+                    this.playerVisual.play('player-idle-down');
+                }
+            }
+        }
+    }
+
+    triggerPlayerAttack() {
+        if (this.playerClasse === 'guerreiro' && this.playerVisual) {
+            const roll = Math.random();
+            const attackAnim = roll < 0.2 ? 'warrior-crit' : (roll < 0.6 ? 'warrior-attack1' : 'warrior-attack2');
+            this.playWarriorAction(attackAnim);
+        }
+    }
+
+    playWarriorAction(animKey) {
+        if (!this.playerVisual || !this.anims.exists(animKey)) return;
+        this.playerActionLock = true;
+        this.playerVisual.setFlipX(this.playerFlipX);
+        this.playerVisual.play(animKey, true);
+
+        // Previne acúmulo de listeners e garante destravamento
+        this.playerVisual.off('animationcomplete');
+        this.playerVisual.once('animationcomplete', () => {
+            this.playerActionLock = false;
+        });
+
+        // Timeout autoritário de segurança: destrava em no máximo 800ms se a animação não disparar o evento
+        if (this.actionLockTimer) this.actionLockTimer.remove();
+        this.actionLockTimer = this.time.delayedCall(800, () => {
+            this.playerActionLock = false;
+        });
+    }
+
+    handleManualAttack() {
+        if (this.inventoryOpen || this.playerActionLock) return;
+        this.triggerPlayerAttack();
+
+        if (!this.player.invulnerable && this.socket && this.socket.readyState === WebSocket.OPEN) {
+            let closestEnemy = null;
+            let minDist = 70; // Alcance do golpe com a espada
+
+            this.enemyData.forEach(e => {
+                const dist = Phaser.Math.Distance.Between(this.player.x, this.player.y, e.sprite.x, e.sprite.y);
+                if (dist < minDist) {
+                    minDist = dist;
+                    closestEnemy = e;
+                }
+            });
+
+            if (closestEnemy) {
+                sendMessage(this.socket, { type: 'attack_enemy', enemyId: closestEnemy.serverId });
+                this.player.invulnerable = true;
+                this.time.delayedCall(500, () => this.player.invulnerable = false);
+            }
+        }
+    }
+
+    handleWarriorSkill(skillName) {
+        if (this.inventoryOpen || this.playerClasse !== 'guerreiro') return;
+
+        switch (skillName) {
+            case 'decisive':
+                this.playWarriorAction('warrior-spell-decisive');
+                this.showActionFeedback('DECISIVE STRIKE! [1]');
+                break;
+            case 'judgement':
+                this.playWarriorAction('warrior-spell-judgement');
+                this.showActionFeedback('JUDGEMENT (SPIN)! [2]');
+                break;
+            case 'demacian':
+                this.playWarriorAction('warrior-spell-demacian');
+                this.showActionFeedback('DEMACIAN JUSTICE! [3]');
+                break;
+            case 'taunt':
+                this.playWarriorAction('warrior-taunt');
+                this.showActionFeedback('PROVOCAÇÃO! [4]');
+                break;
+            case 'dance':
+                this.playWarriorAction('warrior-dance-start');
+                this.playerVisual.once('animationcomplete', () => {
+                    if (this.playerActionLock) {
+                        this.playerVisual.play('warrior-dance-loop', true);
+                        if (this.actionLockTimer) this.actionLockTimer.remove();
+                        this.actionLockTimer = this.time.delayedCall(3000, () => {
+                            this.playerActionLock = false;
+                        });
+                    }
+                });
+                this.showActionFeedback('DANÇA DO GUERREIRO! [5]');
+                break;
+        }
+    }
+
+    showActionFeedback(texto) {
+        if (!this.actionFeedbackText) {
+            this.actionFeedbackText = this.add.text(960, 200, '', {
+                fontFamily: 'Arial',
+                fontSize: '22px',
+                color: '#ffcc00',
+                fontStyle: 'bold',
+                stroke: '#000000',
+                strokeThickness: 4
+            }).setOrigin(0.5).setScrollFactor(0).setDepth(20);
+        }
+        this.actionFeedbackText.setText(texto);
+        this.actionFeedbackText.setAlpha(1);
+        this.tweens.killTweensOf(this.actionFeedbackText);
+        this.tweens.add({
+            targets: this.actionFeedbackText,
+            alpha: 0,
+            duration: 1500,
+            ease: 'Power2'
+        });
     }
 }

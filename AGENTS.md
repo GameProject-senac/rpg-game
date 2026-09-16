@@ -125,9 +125,9 @@ Antes de propor ou escrever qualquer código, execute mentalmente esta sequênci
 
 ### MAPA DO REPOSITÓRIO
 
-* **`server/`** — autoridade única do jogo. `server.js` (Node + WebSocket `ws`, MySQL via `mysql2/promise`, toda regra de negócio e persistência); `.env`/`.env.example` (credenciais, gitignored — cada máquina tem o seu); scripts `test_*.js` (clientes WebSocket crus de teste, não fazem parte do jogo); `schema.sql`/`seed_teste.sql` (banco antigo `rpg_game`, pré-migração A1 — histórico, não usado).
+* **`server/`** — autoridade única do jogo. `server.js` (Node + WebSocket `ws`, MySQL via `mysql2/promise`, toda regra de negócio e persistência); `.env`/`.env.example` (credenciais, gitignored — cada máquina tem o seu); scripts `test_*.js` (clientes WebSocket crus de teste, não fazem parte do jogo).
 * **Raiz (`*.js`)** — client Phaser. Cenas da FSM: `Boot`, `Preload`, `MainMenu`, `SelecaoPersonagem`, `Loading`, `HubCentral`, `ExploracaoCombate` (+ `UIScene` rodando em paralelo durante o combate, tela de inventário). `main.js` inicializa o `Phaser.Game`; `networkConfig.js` centraliza `SERVER_URL`/`sendMessage` compartilhados entre cenas.
-* **`db/setup_banco.sql`** — fonte única de verdade do schema (ver §07). `SchemaCompleto.sql` (raiz) é o script original entregue pela equipe técnica, mantido só como referência histórica — não editar, não é o que roda.
+* **`db/setup_banco.sql`** — fonte única de verdade do schema (ver §07). Único arquivo de schema no repositório; `SchemaCompleto.sql` (raiz) e `server/schema.sql`/`seed_teste.sql` (schema antigo `rpg_game`, pré-migração A1) foram removidos em 2026-09-16 por estarem obsoletos e não usados.
 * **`map/`** — projetos Godot da equipe de arte/design (mapas prontos, gerador procedural, engine de mapa): matéria-prima para a Fase 3/dungeons, ainda não integrada ao client Phaser.
 * **`MAPA E PERSONAGENS/`** — imagens de referência de arte (concept de mapas/personagens/sprites).
 * **Documentação:** `AGENTS.md` (este arquivo, regras vigentes) · `roadmap_game.md` (histórico do que foi feito e pendências) · `spec_p5_coleta_loot.md` (spec do próximo passo grande a implementar) · `commands.md` (comandos para subir servidor/client).
