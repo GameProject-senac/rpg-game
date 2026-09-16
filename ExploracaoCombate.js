@@ -572,9 +572,11 @@ export class ExploracaoCombate extends Phaser.Scene {
 
         if (isWarrior && this.textures.exists('warrior-idle')) {
             sprite = this.add.sprite(state.x, state.y, 'warrior-idle');
-            sprite.setOrigin(0.5, 0.62);
+            sprite.setOrigin(0.5, 0.65);
             sprite.setDepth(5);
-            if (this.anims.exists('warrior-idle')) {
+            if (this.anims.exists('warrior-idle-down')) {
+                sprite.play('warrior-idle-down');
+            } else if (this.anims.exists('warrior-idle')) {
                 sprite.play('warrior-idle');
             }
         } else if (this.textures.exists('player')) {
@@ -708,60 +710,62 @@ export class ExploracaoCombate extends Phaser.Scene {
             const isUp = Boolean(this.cursors.up.isDown || (this.wasd && this.wasd.up.isDown));
             const isDown = Boolean(this.cursors.down.isDown || (this.wasd && this.wasd.down.isDown));
 
-            if (isLeft && this.player.x > wb.x + halfW) {
-                this.player.body.setVelocityX(-300);
-                isMoving = true;
-                moveDir = 'left';
-            } else if (isRight && this.player.x < wb.right - halfW) {
-                this.player.body.setVelocityX(300);
-                isMoving = true;
-                moveDir = 'right';
-            }
+            let vx = 0;
+            let vy = 0;
 
-            if (isUp && this.player.y > wb.y + halfH) {
-                this.player.body.setVelocityY(-300);
+            if (isLeft && this.player.x > wb.x + halfW) vx -= 300;
+            if (isRight && this.player.x < wb.right - halfW) vx += 300;
+            if (isUp && this.player.y > wb.y + halfH) vy -= 300;
+            if (isDown && this.player.y < wb.bottom - halfH) vy += 300;
+
+            this.player.body.setVelocity(vx, vy);
+
+            if (vx !== 0 || vy !== 0) {
                 isMoving = true;
-                if (!moveDir) moveDir = 'up';
-            } else if (isDown && this.player.y < wb.bottom - halfH) {
-                this.player.body.setVelocityY(300);
-                isMoving = true;
-                if (!moveDir) moveDir = 'down';
+                if (vy < 0 && vx < 0) moveDir = 'up-left';
+                else if (vy < 0 && vx > 0) moveDir = 'up-right';
+                else if (vy > 0 && vx < 0) moveDir = 'down-left';
+                else if (vy > 0 && vx > 0) moveDir = 'down-right';
+                else if (vy < 0) moveDir = 'up';
+                else if (vy > 0) moveDir = 'down';
+                else if (vx < 0) moveDir = 'left';
+                else if (vx > 0) moveDir = 'right';
             }
         }
 
-        // Animação do Player (Passo 1 visual + Suporte a Classe Guerreiro)
+        // Animação do Player (Passo 1 visual + Suporte a Classe Guerreiro 8-Direcional)
         if (this.playerVisual && typeof this.playerVisual.play === 'function') {
             if (this.playerClasse === 'guerreiro') {
-                if (isMoving) {
-                    // Movimentação cancela qualquer trava residual de ação
+                if (isMoving && moveDir) {
                     this.playerActionLock = false;
-                    if (moveDir === 'left') {
-                        this.playerFlipX = false; // Pose base do sprite olha para a esquerda
-                        this.playerVisual.setFlipX(false);
-                    } else if (moveDir === 'right') {
-                        this.playerFlipX = true; // Espelhado olha para a direita
-                        this.playerVisual.setFlipX(true);
-                    } else {
-                        this.playerVisual.setFlipX(this.playerFlipX);
-                    }
-                    if (this.anims.exists('warrior-run')) {
-                        this.playerVisual.play('warrior-run', true);
+                    this.playerLastFacing = moveDir;
+                    this.playerVisual.setFlipX(false);
+
+                    const runKey = `warrior-run-${moveDir}`;
+                    const currentAnimKey = this.playerVisual.anims.currentAnim ? this.playerVisual.anims.currentAnim.key : null;
+                    if (currentAnimKey !== runKey && this.anims.exists(runKey)) {
+                        this.playerVisual.setTexture('warrior-run');
+                        this.playerVisual.play(runKey);
                     }
                 } else if (!this.playerActionLock) {
-                    this.playerVisual.setFlipX(this.playerFlipX);
-                    if (this.anims.exists('warrior-idle')) {
-                        this.playerVisual.play('warrior-idle', true);
+                    this.playerVisual.setFlipX(false);
+                    const facing = this.playerLastFacing || 'down';
+                    const idleKey = `warrior-idle-${facing}`;
+                    const currentAnimKey = this.playerVisual.anims.currentAnim ? this.playerVisual.anims.currentAnim.key : null;
+                    if (currentAnimKey !== idleKey && this.anims.exists(idleKey)) {
+                        this.playerVisual.setTexture('warrior-idle');
+                        this.playerVisual.play(idleKey);
                     }
                 }
             } else {
                 let targetAnim = null;
                 if (isMoving && moveDir) {
-                    if (moveDir === 'left') {
+                    if (moveDir === 'left' || moveDir === 'up-left' || moveDir === 'down-left') {
                         this.playerFlipX = true;
                         this.playerVisual.setFlipX(true);
                         targetAnim = 'player-walk-side';
                         this.playerLastFacing = 'side';
-                    } else if (moveDir === 'right') {
+                    } else if (moveDir === 'right' || moveDir === 'up-right' || moveDir === 'down-right') {
                         this.playerFlipX = false;
                         this.playerVisual.setFlipX(false);
                         targetAnim = 'player-walk-side';
@@ -851,16 +855,35 @@ export class ExploracaoCombate extends Phaser.Scene {
                 const distSq = dx * dx + dy * dy;
                 if (rp.classe === 'guerreiro') {
                     if (distSq > 1.0) {
-                        const flipX = (dx < 0);
-                        rp.lastFlipX = flipX;
-                        rp.sprite.setFlipX(flipX);
-                        if (this.anims.exists('warrior-run')) {
-                            rp.sprite.play('warrior-run', true);
+                        let dir = 'down';
+                        const absDx = Math.abs(dx);
+                        const absDy = Math.abs(dy);
+                        if (absDx > absDy * 1.8) {
+                            dir = dx < 0 ? 'left' : 'right';
+                        } else if (absDy > absDx * 1.8) {
+                            dir = dy < 0 ? 'up' : 'down';
+                        } else {
+                            if (dy < 0 && dx < 0) dir = 'up-left';
+                            else if (dy < 0 && dx > 0) dir = 'up-right';
+                            else if (dy > 0 && dx < 0) dir = 'down-left';
+                            else dir = 'down-right';
+                        }
+                        rp.lastFacing = dir;
+                        rp.sprite.setFlipX(false);
+                        const runKey = `warrior-run-${dir}`;
+                        const currentKey = rp.sprite.anims.currentAnim ? rp.sprite.anims.currentAnim.key : null;
+                        if (currentKey !== runKey && this.anims.exists(runKey)) {
+                            rp.sprite.setTexture('warrior-run');
+                            rp.sprite.play(runKey);
                         }
                     } else {
-                        rp.sprite.setFlipX(rp.lastFlipX);
-                        if (this.anims.exists('warrior-idle')) {
-                            rp.sprite.play('warrior-idle', true);
+                        rp.sprite.setFlipX(false);
+                        const facing = rp.lastFacing || 'down';
+                        const idleKey = `warrior-idle-${facing}`;
+                        const currentKey = rp.sprite.anims.currentAnim ? rp.sprite.anims.currentAnim.key : null;
+                        if (currentKey !== idleKey && this.anims.exists(idleKey)) {
+                            rp.sprite.setTexture('warrior-idle');
+                            rp.sprite.play(idleKey);
                         }
                     }
                 } else {
@@ -891,7 +914,7 @@ export class ExploracaoCombate extends Phaser.Scene {
                 }
             }
 
-            const hpYOffset = rp.classe === 'guerreiro' ? -85 : -30;
+            const hpYOffset = rp.classe === 'guerreiro' ? -50 : -30;
             this.drawHpBar(rp.hpGraphics, rp.sprite.x, rp.sprite.y + hpYOffset, rp.hp_atual, rp.hp_max, 40);
         });
 
@@ -911,7 +934,7 @@ export class ExploracaoCombate extends Phaser.Scene {
 
     renderPlayerHp() {
         if (!this.playerStats) return;
-        const hpYOffset = this.playerClasse === 'guerreiro' ? -85 : -30;
+        const hpYOffset = this.playerClasse === 'guerreiro' ? -50 : -30;
         this.drawHpBar(this.playerHpGraphics, this.playerVisual.x, this.playerVisual.y + hpYOffset, this.playerStats.hp_atual, this.playerStats.hp_max, 40);
     }
 
@@ -932,9 +955,12 @@ export class ExploracaoCombate extends Phaser.Scene {
         if (this.playerClasse === 'guerreiro') {
             if (this.textures.exists('warrior-idle')) {
                 this.playerVisual.setTexture('warrior-idle');
-                this.playerVisual.setOrigin(0.5, 0.62);
-                if (this.anims.exists('warrior-idle')) {
-                    this.playerVisual.play('warrior-idle');
+                this.playerVisual.setOrigin(0.5, 0.65);
+                this.playerVisual.setFlipX(false);
+                const facing = this.playerLastFacing || 'down';
+                const animKey = `warrior-idle-${facing}`;
+                if (this.anims.exists(animKey)) {
+                    this.playerVisual.play(animKey);
                 }
             }
         } else {
@@ -950,17 +976,33 @@ export class ExploracaoCombate extends Phaser.Scene {
 
     triggerPlayerAttack() {
         if (this.playerClasse === 'guerreiro' && this.playerVisual) {
+            const facing = this.playerLastFacing || 'down';
             const roll = Math.random();
-            const attackAnim = roll < 0.2 ? 'warrior-crit' : (roll < 0.6 ? 'warrior-attack1' : 'warrior-attack2');
-            this.playWarriorAction(attackAnim);
+            const actionPrefix = roll < 0.2 ? 'warrior-special' : (roll < 0.6 ? 'warrior-melee' : 'warrior-melee2');
+            const targetAnim = `${actionPrefix}-${facing}`;
+            this.playWarriorAction(targetAnim);
         }
     }
 
     playWarriorAction(animKey) {
-        if (!this.playerVisual || !this.anims.exists(animKey)) return;
+        if (!this.playerVisual) return;
+        let targetAnim = animKey;
+        if (!this.anims.exists(targetAnim)) {
+            const fallback = animKey.replace(/-(right|down-right|down|down-left|left|up-left|up|up-right)$/, '');
+            if (this.anims.exists(fallback)) {
+                targetAnim = fallback;
+            } else {
+                return;
+            }
+        }
+
+        const textureKey = targetAnim.replace(/-(right|down-right|down|down-left|left|up-left|up|up-right)$/, '');
         this.playerActionLock = true;
-        this.playerVisual.setFlipX(this.playerFlipX);
-        this.playerVisual.play(animKey, true);
+        if (this.textures.exists(textureKey)) {
+            this.playerVisual.setTexture(textureKey);
+        }
+        this.playerVisual.setFlipX(false);
+        this.playerVisual.play(targetAnim, true);
 
         // Previne acúmulo de listeners e garante destravamento
         this.playerVisual.off('animationcomplete');
@@ -1002,28 +1044,29 @@ export class ExploracaoCombate extends Phaser.Scene {
     handleWarriorSkill(skillName) {
         if (this.inventoryOpen || this.playerClasse !== 'guerreiro') return;
 
+        const facing = this.playerLastFacing || 'down';
         switch (skillName) {
             case 'decisive':
-                this.playWarriorAction('warrior-spell-decisive');
+                this.playWarriorAction(`warrior-special-${facing}`);
                 this.showActionFeedback('DECISIVE STRIKE! [1]');
                 break;
             case 'judgement':
-                this.playWarriorAction('warrior-spell-judgement');
+                this.playWarriorAction(`warrior-spin-${facing}`);
                 this.showActionFeedback('JUDGEMENT (SPIN)! [2]');
                 break;
             case 'demacian':
-                this.playWarriorAction('warrior-spell-demacian');
+                this.playWarriorAction(`warrior-kick-${facing}`);
                 this.showActionFeedback('DEMACIAN JUSTICE! [3]');
                 break;
             case 'taunt':
-                this.playWarriorAction('warrior-taunt');
+                this.playWarriorAction(`warrior-block-${facing}`);
                 this.showActionFeedback('PROVOCAÇÃO! [4]');
                 break;
             case 'dance':
-                this.playWarriorAction('warrior-dance-start');
+                this.playWarriorAction(`warrior-idle2-${facing}`);
                 this.playerVisual.once('animationcomplete', () => {
                     if (this.playerActionLock) {
-                        this.playerVisual.play('warrior-dance-loop', true);
+                        this.playWarriorAction(`warrior-spin-${facing}`);
                         if (this.actionLockTimer) this.actionLockTimer.remove();
                         this.actionLockTimer = this.time.delayedCall(3000, () => {
                             this.playerActionLock = false;
