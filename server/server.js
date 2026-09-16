@@ -174,8 +174,11 @@ function sortearTipoMob() {
 })();
 
 function iniciarServidor() {
-const wss = new WebSocket.Server({ port: 8080 });
-console.log('🚀 Servidor WebSocket AUTORITÁRIO iniciado (Tick Rate: 20Hz)');
+// Porta dinâmica: o Railway (e a maioria dos PaaS) injeta process.env.PORT e espera que o
+// processo escute nela. Fallback 8080 mantém o comportamento local de sempre.
+const PORT = process.env.PORT || 8080;
+const wss = new WebSocket.Server({ port: PORT });
+console.log(`🚀 Servidor WebSocket AUTORITÁRIO iniciado na porta ${PORT} (Tick Rate: 20Hz)`);
 
 // O estado supremo do jogo agora reside aqui
 const gameState = {

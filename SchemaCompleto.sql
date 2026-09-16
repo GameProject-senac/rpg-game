@@ -1,5 +1,5 @@
 CREATE DATABASE IF NOT EXISTS jogo_pi;
-USE jogo_pi;
+--USE jogo_pi;
 
 -- 1. Tabelas Base (Sem Dependências)
 CREATE TABLE jogadores (
