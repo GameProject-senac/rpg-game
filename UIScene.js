@@ -1,183 +1,559 @@
 /**
  * @file UIScene.js
- * @description Cena paralela de UI (Inventário). Apenas renderiza o que o servidor informa —
- * não calcula atributos nem decide validade de equipar (fase2_spec.md Pacote 4, §4.2/§4.6).
+ * @description Cena paralela de UI. Renderiza a interface customizada de livro/abas
+ * integrada diretamente com as comunicações, estatísticas e banco de dados via servidor.
  */
 
-// Moldura da tela (Passo 1) — mantidas como constantes pra layout das abas (Passo 2) derivar dela.
-const FRAME_X = 10, FRAME_Y = 690, FRAME_W = 400, FRAME_H = 150;
-const TAB_W = 90, TAB_H = 34, TAB_GAP = 6;
-const CONTENT_X = FRAME_X + TAB_W + 20;
-// Linhas de equipamento (Passo 3): uma por item, largura = resto da moldura após a coluna de abas.
-const ROW_W = FRAME_X + FRAME_W - CONTENT_X - 10;
-const ROW_H = 40, ROW_GAP = 8, ICON_SIZE = 28;
+const ITEM_TEXTURE_ALIASES = {
+    escudo_improvisado: 'escudo'
+};
+
+function slotEspecialParaItem(item) {
+    const nome = (item?.nome || '').toLocaleLowerCase('pt-BR');
+    if (nome.startsWith('peitoral')) return 15;
+    if (nome.startsWith('capacete') || nome.startsWith('chapéu') || nome === 'capuz') return 16;
+    if (nome.startsWith('calça')) return 17;
+    if (nome.startsWith('botas')) return 18;
+    return null;
+}
 
 export class UIScene extends Phaser.Scene {
-
     constructor() {
-        super('UIScene');
+        super({ key: 'UIScene' });
     }
 
     create() {
-        this.itens = [];
+        // --- 1. PROPRIEDADES E ELEMENTOS DO SEU LIVRO ---
+        this.descTitle = null;
+        this.descText = null;
+        this.bgLivro = null;
+        this.slotsCriados = [];
+        this.fitasInterativas = [];
+        this.selectionOverlays = [];
+        this.mainSlotPositions = Object.create(null);
+        this.exteriorSlotPositions = Object.create(null);
+        this.exteriorSlotObjects = [];
+        this.selectedSlotKey = null;
+        this.hoveredSlotKey = null;
+
+        // --- 2. VARIÁVEIS DE REDE INTEGRADAS ---
+        this.itensDoBanco = [];
+        this.itensPorSlot = new Map();
         this.isOpen = false;
-        this.activeTabId = 'equipamentos';
 
-        // Abas (Passo 2, Round 3): navegação puramente data-driven — uma 3ª aba é só mais um
-        // objeto aqui (id/label), sem tocar em renderTabButtons/selectTab. Nenhuma regra de
-        // negócio mora na aba: cada `content` é só o container que a aba mostra/esconde.
-        this.tabs = [
-            { id: 'equipamentos', label: 'Equipamentos' },
-            { id: 'em_breve', label: 'Em breve' }
-        ];
+        if (!this.anims.exists('slot-select-loop') && this.textures.exists('slot-select')) {
+            this.anims.create({
+                key: 'slot-select-loop',
+                frames: this.anims.generateFrameNumbers('slot-select', { start: 0, end: 3 }),
+                frameRate: 8,
+                repeat: -1
+            });
+        }
 
-        // Tela de inventário (moldura do Passo 1 + abas do Passo 2).
-        this.frameBg = this.add.rectangle(FRAME_X, FRAME_Y, FRAME_W, FRAME_H, 0x000000, 0.85)
-            .setOrigin(0, 0).setStrokeStyle(2, 0x00ffff).setVisible(false);
-        this.tabButtonsContainer = this.add.container(0, 0).setVisible(false);
-        this.slotsContainer = this.add.container(0, 0).setVisible(false); // conteúdo da aba "Equipamentos"
-        this.emBreveText = this.add.text(CONTENT_X, FRAME_Y + 20, 'Em breve', { fontSize: '16px', color: '#ffff00' }).setVisible(false);
+        // --- 3. ELEMENTOS DE TEXTO E STATUS FIXOS ---
+        this.levelBadge = this.add.image(4, 66.5, 'level-icons', 'level-badge')
+            .setDisplaySize(74, 45)
+            .setOrigin(0, 0.5)
+            .setScrollFactor(0)
+            .setDepth(10);
+        this.levelText = this.add.text(41, 66.5, '', {
+            color: '#ffffff',
+            fontSize: '22px',
+            fontStyle: 'bold',
+            stroke: '#251914',
+            strokeThickness: 4
+        }).setOrigin(0.5).setScrollFactor(0).setDepth(11);
 
-        this.statsText = this.add.text(10, 50, '', { color: '#00ff00', fontSize: '14px' }).setScrollFactor(0);
+        this.hpBarImage = this.add.image(80, 0, 'functional-hud', 'hp')
+            .setDisplaySize(270, 270 * 165 / 680)
+            .setOrigin(0, 0)
+            .setScrollFactor(0)
+            .setDepth(10);
+        this.manaBarImage = this.add.image(80, 67, 'functional-hud', 'mana')
+            .setDisplaySize(270, 270 * 165 / 674)
+            .setOrigin(0, 0)
+            .setScrollFactor(0)
+            .setDepth(10);
+        this.hpBarFill = this.add.graphics().setScrollFactor(0).setDepth(11);
+        this.manaBarFill = this.add.graphics().setScrollFactor(0).setDepth(11);
 
-        // Barra de XP (visual funcional, sem polimento — fica pra depois): fundo fixo +
-        // preenchimento redesenhado a cada stats_updated com a fração experiencia/xp_proximo_nivel.
-        this.xpBarBg = this.add.rectangle(10, 72, 200, 10, 0x333333).setOrigin(0, 0).setScrollFactor(0);
-        this.xpBarFill = this.add.rectangle(10, 72, 0, 10, 0x00ff00).setOrigin(0, 0).setScrollFactor(0);
-        this.portalFeedbackText = this.add.text(10, 92, '', {
+        this.statsText = this.add.text(10, 138, '', { color: '#00ff00', fontSize: '14px' }).setScrollFactor(0);
+        this.xpBarBg = this.add.rectangle(10, 160, 200, 10, 0x333333).setOrigin(0, 0).setScrollFactor(0);
+        this.xpBarFill = this.add.rectangle(10, 160, 0, 10, 0x00ff00).setOrigin(0, 0).setScrollFactor(0);
+        this.portalFeedbackText = this.add.text(10, 180, '', {
             color: '#ffcc00',
             fontSize: '16px',
             backgroundColor: '#00000080',
             padding: { x: 4, y: 2 }
         }).setScrollFactor(0);
+        this.damageCounter = this.add.text(1908, 460, '', {
+            color: '#ffd166',
+            fontSize: '34px',
+            fontStyle: 'bold',
+            stroke: '#2b1510',
+            strokeThickness: 6
+        }).setOrigin(1, 0.5).setScrollFactor(0).setDepth(120).setVisible(false);
+        this.damageResetTimer = null;
+        this.totalRecentDamage = 0;
 
-        // Ícone/barra sempre visível — clique alterna a tela (mesma ação abre e fecha).
-        this.toggleIcon = this.add.rectangle(10, 850, 140, 30, 0x2244aa)
-            .setOrigin(0, 0).setStrokeStyle(1, 0x00ffff).setInteractive();
-        this.toggleLabel = this.add.text(18, 857, 'INVENTÁRIO (TAB)', { fontSize: '12px', color: '#ffffff' });
-        this.toggleIcon.on('pointerdown', () => this.game.events.emit('inventory_toggle'));
+        this.exteriorBarLeft = 8;
+        this.exteriorBarTop = 814;
+        this.inventoryExterior = this.add.image(
+            this.exteriorBarLeft + 321,
+            this.exteriorBarTop + 49,
+            'inventory-exterior'
+        ).setScrollFactor(0).setDepth(110);
+        this.renderizarInventarioExterior();
 
-        this.renderTabButtons();
-        this.selectTab(this.activeTabId); // aba padrão ao criar a cena (também reforçado no open, ver setOpen)
+        this.inventoryToggleHitArea = this.add.rectangle(1864, 44, 52, 48, 0x2d2418, 0.95)
+            .setStrokeStyle(2, 0xc9aa54)
+            .setScrollFactor(0)
+            .setDepth(50)
+            .setInteractive({ useHandCursor: true });
+        this.inventoryToggleIcon = this.add.graphics()
+            .lineStyle(3, 0xf2d483, 1)
+            .strokeRect(1849, 32, 13, 24)
+            .strokeRect(1866, 32, 13, 24)
+            .lineBetween(1864, 32, 1864, 56)
+            .setScrollFactor(0)
+            .setDepth(51);
+        this.onInventoryToggleButton = () => this.game.events.emit('inventory_toggle');
+        this.inventoryToggleHitArea.on('pointerdown', this.onInventoryToggleButton);
 
-        this.onInventoryUpdate = (data) => this.renderInventory(data.itens);
+        // Define a página inicial padrão como 'inventario'
+        this.registry.set('activePage', 'inventario');
+
+        // --- 4. CONFIGURAÇÃO DE EVENTOS E OUvINTES ---
+
+        // Abre/fecha o livro do inventário pelo Registro Global
+        this.onInventoryOpenChanged = (parent, value) => {
+            this.isOpen = Boolean(value);
+            if (this.isOpen) {
+                this.renderizarPaginaAtual();
+            } else {
+                this.fecharLivroInventario();
+            }
+        };
+        this.registry.events.on('changedata-inventoryOpen', this.onInventoryOpenChanged);
+
+        this.onInventoryToggleKey = () => this.game.events.emit('inventory_toggle');
+        this.input.keyboard.on('keydown-I', this.onInventoryToggleKey);
+        this.onInventoryScreenState = (data) => {
+            const isOpen = Boolean(data?.open);
+            if (this.registry.get('inventoryOpen') !== isOpen) {
+                this.registry.set('inventoryOpen', isOpen);
+            }
+        };
+        this.game.events.on('inventory_screen_state', this.onInventoryScreenState);
+
+        this.onInventoryOutsideClick = (pointer) => {
+            if (!this.isOpen || !this.bgLivro) return;
+            const insideBook = pointer.x >= this.bookLeft && pointer.x <= this.bookLeft + 1280
+                && pointer.y >= this.bookTop && pointer.y <= this.bookTop + 888;
+            const buttonBounds = this.inventoryToggleHitArea.getBounds();
+            const insideButton = pointer.x >= buttonBounds.left && pointer.x <= buttonBounds.right
+                && pointer.y >= buttonBounds.top && pointer.y <= buttonBounds.bottom;
+            const insideExteriorBar = pointer.x >= this.exteriorBarLeft
+                && pointer.x <= this.exteriorBarLeft + 642
+                && pointer.y >= this.exteriorBarTop
+                && pointer.y <= this.exteriorBarTop + 98;
+            if (!insideBook && !insideButton && !insideExteriorBar) this.game.events.emit('inventory_toggle');
+        };
+        this.input.on('pointerdown', this.onInventoryOutsideClick);
+
+        // Escuta as atualizações de itens vindas do servidor Node
+        this.onInventoryUpdate = (data) => {
+            // Filtra os itens com base nas regras originais de Equipamento
+            this.itensDoBanco = (data.itens || []).filter(item => item.tipo === 'Equipamento');
+            this.itensPorSlot = new Map(this.itensDoBanco.map(item => [Number(item.slot_index), item]));
+            this.renderizarInventarioExterior();
+            if (this.isOpen && this.registry.get('activePage') === 'inventario') {
+                this.renderizarPaginaAtual();
+            }
+        };
+
+        // Escuta atualizações de nível, HP e experiência
         this.onStatsUpdated = (data) => this.renderStats(data);
-        this.onInventoryScreenState = ({ open }) => this.setOpen(open);
         this.onPortalFeedbackUi = (data) => this.showPortalFeedback(data);
+        this.onDamageDealt = (damage) => this.recordDamage(damage);
 
+        // Registra as escutas no barramento de eventos do jogo
         this.game.events.on('inventory_update', this.onInventoryUpdate);
         this.game.events.on('stats_updated', this.onStatsUpdated);
-        this.game.events.on('inventory_screen_state', this.onInventoryScreenState);
         this.game.events.on('portal_feedback_ui', this.onPortalFeedbackUi);
+        this.game.events.on('damage_dealt', this.onDamageDealt);
 
+        // Garante a destruição dos ouvintes se a cena fechar
         this.events.once('shutdown', () => {
             this.game.events.off('inventory_update', this.onInventoryUpdate);
             this.game.events.off('stats_updated', this.onStatsUpdated);
-            this.game.events.off('inventory_screen_state', this.onInventoryScreenState);
             this.game.events.off('portal_feedback_ui', this.onPortalFeedbackUi);
-            this.slotsContainer.destroy();
-            this.tabButtonsContainer.destroy();
-            this.frameBg.destroy();
-            this.emBreveText.destroy();
+            this.game.events.off('damage_dealt', this.onDamageDealt);
+            this.game.events.off('inventory_screen_state', this.onInventoryScreenState);
+            this.registry.events.off('changedata-inventoryOpen', this.onInventoryOpenChanged);
+            this.input.keyboard.off('keydown-I', this.onInventoryToggleKey);
+            this.input.off('pointerdown', this.onInventoryOutsideClick);
+            this.fecharLivroInventario();
+            this.exteriorSlotObjects.forEach(object => object.destroy());
+            this.inventoryExterior.destroy();
+            this.inventoryToggleHitArea.destroy();
+            this.inventoryToggleIcon.destroy();
+            this.statsText.destroy();
+            this.xpBarBg.destroy();
+            this.xpBarFill.destroy();
             this.portalFeedbackText.destroy();
-            this.toggleIcon.destroy();
-            this.toggleLabel.destroy();
+            this.levelBadge.destroy();
+            this.levelText.destroy();
+            this.hpBarImage.destroy();
+            this.manaBarImage.destroy();
+            this.hpBarFill.destroy();
+            this.manaBarFill.destroy();
+            this.damageCounter.destroy();
+            if (this.damageResetTimer) this.damageResetTimer.remove(false);
         });
     }
 
-    setOpen(open) {
-        this.isOpen = open;
-        this.frameBg.setVisible(open);
-        this.tabButtonsContainer.setVisible(open);
-        if (open) this.activeTabId = 'equipamentos'; // sempre reabre na aba padrão
-        this.selectTab(this.activeTabId); // única fonte de verdade pra visibilidade do conteúdo
+    renderizarInventarioExterior() {
+        this.exteriorSlotObjects.forEach(object => object.destroy());
+        this.exteriorSlotObjects = [];
+        if (this.hoveredSlotKey?.startsWith('exterior:')) this.hoveredSlotKey = null;
+        this.exteriorSlotPositions = Object.create(null);
+
+        const centersX = [56, 121.5, 186.5, 251, 315.5, 380.5, 445, 509.5, 574.5];
+        const centerY = 40;
+        const slotSize = 60;
+
+        centersX.forEach((centerX, index) => {
+            const x = this.exteriorBarLeft + centerX;
+            const y = this.exteriorBarTop + centerY;
+            const slotKey = `exterior:${index}`;
+            this.exteriorSlotPositions[index] = { x, y, size: slotSize };
+
+            const slot = this.add.rectangle(x, y, slotSize, slotSize, 0xffffff, 0.001)
+                .setScrollFactor(0)
+                .setDepth(112)
+                .setInteractive({ useHandCursor: true });
+            this.exteriorSlotObjects.push(slot);
+
+            slot.on('pointerover', () => {
+                this.hoveredSlotKey = slotKey;
+                this.atualizarDestaquesSlots();
+            });
+            slot.on('pointerout', () => {
+                if (this.hoveredSlotKey === slotKey) {
+                    this.hoveredSlotKey = null;
+                    this.atualizarDestaquesSlots();
+                }
+            });
+            slot.on('pointerdown', () => this.clicarSlotInventario(index, 'exterior'));
+
+            const item = this.itensPorSlot.get(index);
+            const textureKey = item?.icon || ITEM_TEXTURE_ALIASES[item?.nome] || item?.nome;
+            if (textureKey && this.textures.exists(textureKey)) {
+                const itemIcon = this.add.image(x, y, textureKey)
+                    .setDisplaySize(38, 38)
+                    .setScrollFactor(0)
+                    .setDepth(113);
+                this.exteriorSlotObjects.push(itemIcon);
+            }
+        });
+
+        this.atualizarDestaquesSlots();
     }
 
-    // Desenha os botões verticais na lateral esquerda da moldura, um por entrada de `this.tabs`.
-    renderTabButtons() {
-        this.tabButtonsContainer.removeAll(true);
-        this.tabButtonRects = {};
+    renderizarPaginaAtual() {
+        this.limparElementosPagina();
 
-        this.tabs.forEach((tab, i) => {
-            const x = FRAME_X + 8;
-            const y = FRAME_Y + 8 + i * (TAB_H + TAB_GAP);
+        const paginaAtiva = this.registry.get('activePage') || 'inventario';
+        const frame = paginaAtiva === 'quests' ? 1 : 0;
+        this.bookScale = 1280 / 435;
+        this.bookLeft = 320;
+        this.bookTop = 16;
+        this.bgLivro = this.add.image(960, 460, 'book_bg', frame)
+            .setDisplaySize(1280, 888)
+            .setScrollFactor(0)
+            .setDepth(100);
 
-            const bg = this.add.rectangle(x, y, TAB_W, TAB_H, 0x223344).setOrigin(0, 0).setStrokeStyle(1, 0x00ffff);
-            bg.setInteractive();
-            bg.on('pointerdown', () => this.selectTab(tab.id));
+        this.criarFitasInterativas(paginaAtiva);
 
-            const label = this.add.text(x + 6, y + 9, tab.label, { fontSize: '11px', color: '#ffffff' });
+        if (paginaAtiva === 'inventario') {
+            this.desenharAbaInventario();
+        } else if (paginaAtiva === 'quests') {
+            this.desenharAbaQuests();
+        }
+        this.atualizarDestaquesSlots();
+    }
 
-            this.tabButtonRects[tab.id] = bg;
-            this.tabButtonsContainer.add([bg, label]);
+    criarFitasInterativas(paginaAtiva) {
+        const centers = paginaAtiva === 'quests'
+            ? [{ page: 'inventario', x: 170, y: 207 }, { page: 'quests', x: 306, y: 207 }]
+            : [{ page: 'inventario', x: 97, y: 231 }, { page: 'quests', x: 227, y: 231 }];
+
+        centers.forEach(({ page, x, y }) => {
+            const marker = this.add.rectangle(
+                this.bookLeft + x * this.bookScale,
+                this.bookTop + y * this.bookScale,
+                34 * this.bookScale,
+                40 * this.bookScale,
+                0xffffff,
+                0.001
+            ).setScrollFactor(0).setDepth(102).setInteractive({ useHandCursor: true });
+
+            marker.on('pointerdown', () => {
+                if (this.registry.get('activePage') !== page) {
+                    this.registry.set('activePage', page);
+                    this.renderizarPaginaAtual();
+                }
+            });
+
+            this.fitasInterativas.push(marker);
         });
     }
 
-    // Troca a aba ativa: realça o botão selecionado e mostra só o conteúdo dela.
-    // Adicionar uma 3ª aba: entrada em `this.tabs` + um novo `if (tabId === '...')` aqui.
-    selectTab(tabId) {
-        this.activeTabId = tabId;
+    desenharAbaInventario() {
+        const scale = this.bookScale;
+        const descriptionX = this.bookLeft + 270 * scale;
+        this.descTitle = this.add.text(descriptionX, this.bookTop + 105 * scale, 'Selecione um item', {
+            fontSize: '22px', color: '#5c4525'
+        }).setOrigin(0.5).setScrollFactor(0).setDepth(106);
+        this.descText = this.add.text(descriptionX, this.bookTop + 132 * scale, '', {
+            fontSize: '18px', color: '#473a2b', wordWrap: { width: 100 * scale }, align: 'center'
+        }).setOrigin(0.5, 0).setScrollFactor(0).setDepth(106);
+        this.slotsCriados.push(this.descTitle, this.descText);
 
-        this.tabs.forEach(tab => {
-            const ativa = tab.id === tabId;
-            this.tabButtonRects[tab.id]
-                .setFillStyle(ativa ? 0x225533 : 0x223344)
-                .setStrokeStyle(ativa ? 2 : 1, ativa ? 0xffff00 : 0x00ffff);
+        const slotSize = 14 * scale;
+        const gridCentersX = [85.5, 109.5, 133.5, 156.5, 181.5];
+        const gridCentersY = [103.5, 125.5, 147.5];
+        let slotIndex = 0;
+
+        for (let rowIndex = 0; rowIndex < gridCentersY.length; rowIndex++) {
+            for (let columnIndex = 0; columnIndex < gridCentersX.length; columnIndex++) {
+                const x = this.bookLeft + gridCentersX[columnIndex] * scale;
+                const y = this.bookTop + gridCentersY[rowIndex] * scale;
+                this.criarSlotInventario(slotIndex, x, y, slotSize, this.itensPorSlot.get(slotIndex));
+                slotIndex++;
+            }
+        }
+
+        const bottomSlotCenters = [[96.5, 184.5], [120.5, 184.5], [143.5, 184.5], [168.5, 184.5]];
+        bottomSlotCenters.forEach(([centerX, centerY]) => {
+            const x = this.bookLeft + centerX * scale;
+            const y = this.bookTop + centerY * scale;
+            this.criarSlotInventario(slotIndex, x, y, slotSize, this.itensPorSlot.get(slotIndex));
+            slotIndex++;
         });
-
-        // Gateado por `isOpen`: a aba ativa só fica visível se a tela estiver de fato aberta —
-        // sem isso, o `selectTab` inicial do create() (aba padrão) já deixava o conteúdo visível
-        // antes da primeira abertura (bug reportado: itens "soltos" na entrada até o 1º toggle).
-        this.slotsContainer.setVisible(this.isOpen && tabId === 'equipamentos');
-        this.emBreveText.setVisible(this.isOpen && tabId === 'em_breve');
+        this.atualizarDestaquesSlots();
     }
 
-    // Desenha a lista de equipamentos da aba "Equipamentos" a partir do inventário vindo do
-    // servidor. Só tipo='Equipamento' entra aqui — Recurso (ex.: moedas legadas) e qualquer
-    // tipo futuro não-equipável ficam de fora por construção (inclusão explícita, não exclusão).
-    renderInventory(itens) {
-        this.itens = (itens || []).filter(item => item.tipo === 'Equipamento');
-        this.slotsContainer.removeAll(true);
+    criarSlotInventario(slotIndex, x, y, slotSize, item) {
+        const slotKey = `main:${slotIndex}`;
+        const slot = this.add.rectangle(x, y, slotSize, slotSize, 0xffffff, 0.001)
+            .setScrollFactor(0)
+            .setDepth(103)
+            .setInteractive({ useHandCursor: true });
+        this.slotsCriados.push(slot);
+        this.mainSlotPositions[slotIndex] = { x, y, size: slotSize };
 
-        this.itens.forEach((item, i) => {
-            const x = CONTENT_X;
-            const y = FRAME_Y + 10 + i * (ROW_H + ROW_GAP);
-            const cor = item.equipado ? 0x00ff00 : 0x888888; // verde = equipado, cinza = não-equipado
+        slot.on('pointerover', () => {
+            this.hoveredSlotKey = slotKey;
+            this.atualizarDestaquesSlots();
+        });
+        slot.on('pointerout', () => {
+            if (this.hoveredSlotKey === slotKey) {
+                this.hoveredSlotKey = null;
+                this.atualizarDestaquesSlots();
+            }
+        });
+        slot.on('pointerdown', () => this.clicarSlotInventario(slotIndex, 'main'));
 
-            // Linha inteira é o alvo de clique — reusa o mesmo pipeline (inventory_action ->
-            // equip_item/unequip_item) que já existia antes da tela nova.
-            const rowBg = this.add.rectangle(x, y, ROW_W, ROW_H, item.equipado ? 0x1a3a1a : 0x2a2a2a)
-                .setOrigin(0, 0).setStrokeStyle(2, cor);
-            rowBg.setInteractive();
-            rowBg.on('pointerdown', () => this.onSlotClick(item));
+        if (!item) return;
+        const textureKey = item.icon || ITEM_TEXTURE_ALIASES[item.nome] || item.nome;
+        if (this.textures.exists(textureKey)) {
+            const itemImg = this.add.image(x, y, textureKey)
+                .setDisplaySize(slotSize * 0.72, slotSize * 0.72)
+                .setScrollFactor(0)
+                .setDepth(104);
+            this.slotsCriados.push(itemImg);
+        }
 
-            // Placeholder de ícone: quando o Godot entregar sprites, troca só este rectangle
-            // por uma imagem — nome/status ao lado não mudam de posição.
-            const iconPlaceholder = this.add.rectangle(x + 6, y + 6, ICON_SIZE, ICON_SIZE, cor, 0.3)
-                .setOrigin(0, 0).setStrokeStyle(1, cor);
+        if (item.equipado) {
+            const equippedBorder = this.add.rectangle(x, y, slotSize, slotSize)
+                .setStrokeStyle(2, 0x16754b)
+                .setScrollFactor(0)
+                .setDepth(105);
+            this.slotsCriados.push(equippedBorder);
+        }
+    }
 
-            const nomeText = this.add.text(x + ICON_SIZE + 16, y + 5, item.nome, { fontSize: '12px', color: '#ffffff' });
-            const statusText = this.add.text(x + ICON_SIZE + 16, y + 21,
-                item.equipado ? 'EQUIPADO' : 'Clique para equipar',
-                { fontSize: '10px', color: item.equipado ? '#00ff00' : '#aaaaaa' });
+    clicarSlotInventario(slotIndex, group) {
+        const slotKey = `${group}:${slotIndex}`;
+        const item = this.itensPorSlot.get(slotIndex);
 
-            this.slotsContainer.add([rowBg, iconPlaceholder, nomeText, statusText]);
+        if (!this.selectedSlotKey) {
+            if (!item) return;
+            this.selectedSlotKey = slotKey;
+            this.mostrarDescricaoItem(item);
+            this.atualizarDestaquesSlots();
+            return;
+        }
+
+        const selectedIndex = Number(this.selectedSlotKey.split(':')[1]);
+        const selectedItem = this.itensPorSlot.get(selectedIndex);
+        if (!selectedItem) {
+            this.selectedSlotKey = item ? slotKey : null;
+            this.atualizarDestaquesSlots();
+            return;
+        }
+
+        if (selectedIndex === slotIndex) {
+            if (this.selectedSlotKey !== slotKey) {
+                this.selectedSlotKey = slotKey;
+            } else {
+                const requiredSlot = slotEspecialParaItem(selectedItem);
+                if (!selectedItem.equipado && requiredSlot !== null && selectedIndex !== requiredSlot) {
+                    this.descTitle?.setText(selectedItem.nome);
+                    this.descText?.setText('Mova para o slot especial correspondente para aplicar os atributos.');
+                    return;
+                }
+                const type = selectedItem.equipado ? 'unequip_item' : 'equip_item';
+                this.game.events.emit('inventory_action', { type, inventario_id: selectedItem.id });
+            }
+            this.mostrarDescricaoItem(selectedItem);
+            this.atualizarDestaquesSlots();
+            return;
+        }
+
+        if (!this.slotAceitaItem(selectedItem, slotIndex) ||
+            (item && !this.slotAceitaItem(item, selectedIndex))) {
+            this.descTitle?.setText('Slot incompatível');
+            this.descText?.setText('Escolha um slot correspondente à categoria do item.');
+            return;
+        }
+
+        this.selectedSlotKey = null;
+        this.game.events.emit('inventory_action', {
+            type: 'swap_inventory_slots',
+            fromSlot: selectedIndex,
+            toSlot: slotIndex
+        });
+        this.atualizarDestaquesSlots();
+    }
+
+    slotAceitaItem(item, slotIndex) {
+        const slotEspecial = slotEspecialParaItem(item);
+        return slotIndex < 15 || slotEspecial === slotIndex;
+    }
+
+    mostrarDescricaoItem(item) {
+        const txtEquipado = item.equipado ? ' (EQUIPADO)' : '';
+        this.descTitle?.setText(item.nome + txtEquipado);
+        this.descText?.setText(item.descricao || 'Sem descrição.');
+    }
+
+    atualizarDestaquesSlots() {
+        this.selectionOverlays.forEach(overlay => overlay.destroy());
+        this.selectionOverlays = [];
+
+        const visibleSlotKeys = [];
+        if (this.selectedSlotKey) visibleSlotKeys.push(this.selectedSlotKey);
+        if (this.hoveredSlotKey && this.hoveredSlotKey !== this.selectedSlotKey) {
+            visibleSlotKeys.push(this.hoveredSlotKey);
+        }
+
+        visibleSlotKeys.forEach(slotKey => {
+            const [group, index] = slotKey.split(':');
+            const positions = group === 'main' ? this.mainSlotPositions : this.exteriorSlotPositions;
+            const slot = positions[index];
+            if (!slot) return;
+            const overlay = this.add.sprite(slot.x, slot.y, 'slot-select')
+                .setDisplaySize(slot.size, slot.size)
+                .setScrollFactor(0)
+                .setDepth(group === 'exterior' ? 115 : 107);
+            overlay.play('slot-select-loop');
+            this.selectionOverlays.push(overlay);
         });
     }
 
-    // Clique-equipar simples (drag & drop sofisticado fora de escopo, §4.5).
-    // Só decide QUAL mensagem mandar com base no estado já informado pelo servidor — não valida nada.
-    onSlotClick(item) {
-        const tipoMsg = item.equipado ? 'unequip_item' : 'equip_item';
-        this.game.events.emit('inventory_action', { type: tipoMsg, inventario_id: item.id });
+    desenharAbaQuests() {
+        const scale = this.bookScale;
+        const descriptionX = this.bookLeft + 270 * scale;
+        this.descTitle = this.add.text(descriptionX, this.bookTop + 105 * scale, 'Selecione uma missão', {
+            fontSize: '22px', color: '#5c4525'
+        }).setOrigin(0.5).setScrollFactor(0).setDepth(106);
+        this.descText = this.add.text(descriptionX, this.bookTop + 132 * scale, '', {
+            fontSize: '18px', color: '#473a2b', wordWrap: { width: 100 * scale }, align: 'center'
+        }).setOrigin(0.5, 0).setScrollFactor(0).setDepth(106);
+        this.slotsCriados.push(this.descTitle, this.descText);
+
+        const listaQuests = this.registry.get('playerQuests') || [
+            { id: 1, name: "Primeiro Passo", desc: "Fale com o ferreiro na vila central." },
+            { id: 2, name: "Limpeza na Caverna", desc: "Derrote 5 morcegos na caverna ao norte." }
+        ];
+
+        listaQuests.forEach((quest, index) => {
+            const questItemText = this.add.text(
+                this.bookLeft + 110 * scale,
+                this.bookTop + (103 + index * 21) * scale,
+                quest.name,
+                { fontSize: '18px', color: '#572c20', wordWrap: { width: 72 * scale } }
+            )
+                .setScrollFactor(0)
+                .setDepth(104)
+                .setInteractive({ useHandCursor: true });
+
+            questItemText.on('pointerdown', () => {
+                this.descTitle.setText(quest.name);
+                this.descText.setText(quest.desc);
+            });
+
+            this.slotsCriados.push(questItemText);
+        });
     }
 
     renderStats(stats) {
-        this.statsText.setText(`NÍVEL: ${stats.nivel}  HP: ${stats.hp_atual}/${stats.hp_max}  DANO: ${stats.dano_base}  DEF: ${stats.defesa_base}  XP: ${Math.floor(stats.experiencia)}`);
-
-        // Nível máximo (xp_proximo_nivel null): barra cheia, sem divisão por zero.
+        this.levelText.setText(String(stats.nivel ?? 1));
+        this.renderResourceBar(this.hpBarFill, 80, 0, stats.hp_atual, stats.hp_max, 161, 62, 472, 43, 0xd72d50, 680);
+        this.renderResourceBar(this.manaBarFill, 80, 67, 1, 1, 160, 62, 467, 43, 0x6662c8, 674);
+        this.statsText.setText(`DANO: ${stats.dano_base}  DEF: ${stats.defesa_base}  XP: ${Math.floor(stats.experiencia)}`);
         const fracao = stats.xp_proximo_nivel ? Phaser.Math.Clamp(stats.experiencia / stats.xp_proximo_nivel, 0, 1) : 1;
         this.xpBarFill.width = 200 * fracao;
+    }
+
+    renderResourceBar(graphics, x, y, current, maximum, trackX, trackY, trackWidth, trackHeight, fillColor, sourceWidth = 684) {
+        const ratio = maximum > 0 ? Phaser.Math.Clamp(current / maximum, 0, 1) : 0;
+        const scale = 270 / sourceWidth;
+        const scaledTrackX = trackX * scale;
+        const scaledTrackY = trackY * scale;
+        const scaledTrackWidth = trackWidth * scale;
+        const scaledTrackHeight = trackHeight * scale;
+
+        graphics.clear();
+        graphics.fillStyle(0x382a3b, 1);
+        graphics.fillRect(x + scaledTrackX, y + scaledTrackY, scaledTrackWidth, scaledTrackHeight);
+        graphics.fillStyle(fillColor, 1);
+        graphics.fillRect(x + scaledTrackX, y + scaledTrackY, scaledTrackWidth * ratio, scaledTrackHeight);
+    }
+
+    recordDamage(damage) {
+        const amount = Number(damage);
+        if (!Number.isFinite(amount) || amount <= 0) return;
+
+        this.totalRecentDamage += amount;
+        this.renderDamageCounter();
+        if (this.damageResetTimer) this.damageResetTimer.remove(false);
+        this.damageResetTimer = this.time.delayedCall(5000, () => {
+            this.damageResetTimer = null;
+            this.totalRecentDamage = 0;
+            this.renderDamageCounter();
+        });
+    }
+
+    renderDamageCounter() {
+        if (this.totalRecentDamage <= 0) {
+            this.damageCounter.setText('').setVisible(false);
+            return;
+        }
+        this.damageCounter.setText(`DANO: ${Math.floor(this.totalRecentDamage)}`).setVisible(true);
     }
 
     showPortalFeedback(data) {
@@ -192,4 +568,29 @@ export class UIScene extends Phaser.Scene {
             this.portalFeedbackText.setText('');
         });
     }
+
+    fecharLivroInventario() {
+        this.isOpen = false;
+        this.selectedSlotKey = null;
+        this.limparElementosPagina();
+        this.atualizarDestaquesSlots();
+    }
+
+    limparElementosPagina() {
+        if (this.bgLivro) { this.bgLivro.destroy(); this.bgLivro = null; }
+        if (this.descTitle) { this.descTitle.destroy(); this.descTitle = null; }
+        if (this.descText) { this.descText.destroy(); this.descText = null; }
+        this.selectionOverlays.forEach(overlay => overlay.destroy());
+        this.selectionOverlays = [];
+        this.mainSlotPositions = Object.create(null);
+        if (this.hoveredSlotKey?.startsWith('main:')) this.hoveredSlotKey = null;
+        if (this.slotsCriados.length > 0) {
+            this.slotsCriados.forEach(el => { if (el) el.destroy(); });
+            this.slotsCriados = [];
+        }
+        if (this.fitasInterativas.length > 0) {
+            this.fitasInterativas.forEach(fita => { if (fita) fita.destroy(); });
+            this.fitasInterativas = [];
+        }
+        }
 }

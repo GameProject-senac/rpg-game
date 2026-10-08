@@ -174,10 +174,12 @@ CREATE TABLE inventario (
     id INT AUTO_INCREMENT PRIMARY KEY,
     personagem_id INT NOT NULL,
     item_id INT NOT NULL,
+    slot_index INT NOT NULL,
     quantidade INT DEFAULT 1,
     equipado BOOLEAN DEFAULT FALSE,
     sku VARCHAR(50) UNIQUE,
     atualizado_em TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY uq_inventario_personagem_slot (personagem_id, slot_index),
     CONSTRAINT fk_inventario_personagem FOREIGN KEY (personagem_id) REFERENCES personagens(id) ON DELETE CASCADE,
     CONSTRAINT fk_inventario_item FOREIGN KEY (item_id) REFERENCES Itens(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
@@ -233,10 +235,38 @@ INSERT INTO table_nivel (nivel, xp_necessaria) VALUES
 -- 2. POPULAR O MÍNIMO — dados de teste
 -- =====================================================================
 
--- Itens: os 2 itens hoje hardcoded em server.js (const ITENS, linhas 45-48)
+-- Itens: espada e escudo de treino, mais o catálogo dos ícones em assets/inventory/Itens.
 INSERT INTO Itens (nome, descricao, localizacao, chance, tipo, bonus_dano, bonus_defesa, bonus_hp) VALUES
-('espada_enferrujada', 'Espada enferrujada de treino', NULL, 1.0, 'Equipamento', 10, 0, 0),
-('escudo_improvisado', 'Escudo improvisado de treino', NULL, 1.0, 'Equipamento', 0, 5, 20);
+('espada', 'Espada simples para combate corpo a corpo.', NULL, 1.0, 'Equipamento', 10, 0, 0),
+('escudo_improvisado', 'Escudo improvisado de treino', NULL, 1.0, 'Equipamento', 0, 5, 20),
+('Anel', 'Anel simples que completa o equipamento.', NULL, 1.0, 'Equipamento', 0, 0, 0),
+('arco', 'Arco leve para ataques à distância.', NULL, 1.0, 'Equipamento', 0, 0, 0),
+('botasAtirador', 'Botas leves para manter a mobilidade do atirador.', NULL, 1.0, 'Equipamento', 0, 0, 0),
+('botasGuerreiro', 'Botas reforçadas para o combate corpo a corpo.', NULL, 1.0, 'Equipamento', 0, 0, 0),
+('botasMago', 'Botas leves usadas por magos em expedições.', NULL, 1.0, 'Equipamento', 0, 0, 0),
+('botasSuporte', 'Botas resistentes para acompanhar o grupo.', NULL, 1.0, 'Equipamento', 0, 0, 0),
+('botasTank', 'Botas pesadas feitas para suportar impactos.', NULL, 1.0, 'Equipamento', 0, 0, 0),
+('cajadoMago', 'Cajado utilizado por magos em combate.', NULL, 1.0, 'Equipamento', 0, 0, 0),
+('cajadoSuporte', 'Cajado usado para auxiliar os aliados.', NULL, 1.0, 'Equipamento', 0, 0, 0),
+('calçaAtirador', 'Calça leve para manter a agilidade do atirador.', NULL, 1.0, 'Equipamento', 0, 0, 0),
+('calçaGuerreiro', 'Calça reforçada para uso em combate.', NULL, 1.0, 'Equipamento', 0, 0, 0),
+('calçaMago', 'Calça leve usada por magos.', NULL, 1.0, 'Equipamento', 0, 0, 0),
+('calçaSuporte', 'Calça resistente para acompanhar o grupo.', NULL, 1.0, 'Equipamento', 0, 0, 0),
+('calçaTank', 'Calça acolchoada para proteger o tanque.', NULL, 1.0, 'Equipamento', 0, 0, 0),
+('capaceteGuerreiro', 'Capacete reforçado para proteger o guerreiro.', NULL, 1.0, 'Equipamento', 0, 0, 0),
+('capaceteTank', 'Capacete pesado com foco em proteção.', NULL, 1.0, 'Equipamento', 0, 0, 0),
+('capuz', 'Capuz simples que cobre a cabeça.', NULL, 1.0, 'Equipamento', 0, 0, 0),
+('chapéuMago', 'Chapéu tradicional usado por magos.', NULL, 1.0, 'Equipamento', 0, 0, 0),
+('clava', 'Clava pesada para ataques corpo a corpo.', NULL, 1.0, 'Equipamento', 0, 0, 0),
+('escudo', 'Escudo usado para bloquear ataques.', NULL, 1.0, 'Equipamento', 0, 0, 0),
+('flecha', 'Munição compatível com arcos.', NULL, 1.0, 'Equipamento', 0, 0, 0),
+('lança', 'Lança de alcance médio para combate.', NULL, 1.0, 'Equipamento', 0, 0, 0),
+('marreta', 'Marreta pesada para golpes de impacto.', NULL, 1.0, 'Equipamento', 0, 0, 0),
+('peitoralAtirador', 'Peitoral leve para manter a agilidade.', NULL, 1.0, 'Equipamento', 0, 0, 0),
+('peitoralGuerreiro', 'Peitoral reforçado para o guerreiro.', NULL, 1.0, 'Equipamento', 0, 0, 0),
+('peitoralMago', 'Peitoral leve usado por magos.', NULL, 1.0, 'Equipamento', 0, 0, 0),
+('peitoralSuporte', 'Peitoral resistente para funções de suporte.', NULL, 1.0, 'Equipamento', 0, 0, 0),
+('peitoralTank', 'Peitoral pesado com foco em proteção.', NULL, 1.0, 'Equipamento', 0, 0, 0);
 
 -- mobs: 5 tipos de teste (Loot & Inimigos, Passo 1a + Passo 2a — valores
 -- provisórios do dono do projeto). 'Comum' é 50hp/15atk/2def, o baseline
@@ -279,19 +309,114 @@ INSERT INTO personagens (jogadores_id, nome, classe, nivel, experiencia, hp_atua
 ((SELECT id FROM jogadores WHERE email = 'teste@jogo-pi.local'), 'Suporte Teste',   'suporte',   1, 0, 80,  80,  20, 4),
 ((SELECT id FROM jogadores WHERE email = 'teste@jogo-pi.local'), 'Tanque Teste',    'tanque',    1, 0, 150, 150, 15, 8);
 
--- inventario: o Arqueiro Teste com espada e escudo, equipados.
--- item_id resolvido por subquery (nome -> id), robusto à ordem de
--- AUTO_INCREMENT dos inserts acima.
-INSERT INTO inventario (personagem_id, item_id, quantidade, equipado) VALUES
+INSERT INTO inventario (personagem_id, item_id, quantidade, equipado, slot_index) VALUES
 (
-    (SELECT id FROM personagens WHERE nome = 'Arqueiro Teste'),
-    (SELECT id FROM Itens WHERE nome = 'espada_enferrujada'),
-    1, TRUE
+    (SELECT id FROM personagens WHERE nome = 'Guerreiro Teste'),
+    (SELECT id FROM Itens WHERE nome = 'espada'), 1, TRUE, 0
+),
+(
+    (SELECT id FROM personagens WHERE nome = 'Guerreiro Teste'),
+    (SELECT id FROM Itens WHERE nome = 'capaceteGuerreiro'), 1, TRUE, 16
+),
+(
+    (SELECT id FROM personagens WHERE nome = 'Guerreiro Teste'),
+    (SELECT id FROM Itens WHERE nome = 'peitoralGuerreiro'), 1, TRUE, 15
+),
+(
+    (SELECT id FROM personagens WHERE nome = 'Guerreiro Teste'),
+    (SELECT id FROM Itens WHERE nome = 'calçaGuerreiro'), 1, TRUE, 17
+),
+(
+    (SELECT id FROM personagens WHERE nome = 'Guerreiro Teste'),
+    (SELECT id FROM Itens WHERE nome = 'botasGuerreiro'), 1, TRUE, 18
+),
+(
+    (SELECT id FROM personagens WHERE nome = 'Mago Teste'),
+    (SELECT id FROM Itens WHERE nome = 'cajadoMago'), 1, TRUE, 0
+),
+(
+    (SELECT id FROM personagens WHERE nome = 'Mago Teste'),
+    (SELECT id FROM Itens WHERE nome = 'chapéuMago'), 1, TRUE, 16
+),
+(
+    (SELECT id FROM personagens WHERE nome = 'Mago Teste'),
+    (SELECT id FROM Itens WHERE nome = 'peitoralMago'), 1, TRUE, 15
+),
+(
+    (SELECT id FROM personagens WHERE nome = 'Mago Teste'),
+    (SELECT id FROM Itens WHERE nome = 'calçaMago'), 1, TRUE, 17
+),
+(
+    (SELECT id FROM personagens WHERE nome = 'Mago Teste'),
+    (SELECT id FROM Itens WHERE nome = 'botasMago'), 1, TRUE, 18
 ),
 (
     (SELECT id FROM personagens WHERE nome = 'Arqueiro Teste'),
-    (SELECT id FROM Itens WHERE nome = 'escudo_improvisado'),
-    1, TRUE
+    (SELECT id FROM Itens WHERE nome = 'arco'), 1, TRUE, 0
+),
+(
+    (SELECT id FROM personagens WHERE nome = 'Arqueiro Teste'),
+    (SELECT id FROM Itens WHERE nome = 'flecha'), 1, FALSE, 1
+),
+(
+    (SELECT id FROM personagens WHERE nome = 'Arqueiro Teste'),
+    (SELECT id FROM Itens WHERE nome = 'peitoralAtirador'), 1, TRUE, 15
+),
+(
+    (SELECT id FROM personagens WHERE nome = 'Arqueiro Teste'),
+    (SELECT id FROM Itens WHERE nome = 'calçaAtirador'), 1, TRUE, 17
+),
+(
+    (SELECT id FROM personagens WHERE nome = 'Arqueiro Teste'),
+    (SELECT id FROM Itens WHERE nome = 'botasAtirador'), 1, TRUE, 18
+),
+(
+    (SELECT id FROM personagens WHERE nome = 'Suporte Teste'),
+    (SELECT id FROM Itens WHERE nome = 'cajadoSuporte'), 1, TRUE, 0
+),
+(
+    (SELECT id FROM personagens WHERE nome = 'Suporte Teste'),
+    (SELECT id FROM Itens WHERE nome = 'capuz'), 1, TRUE, 16
+),
+(
+    (SELECT id FROM personagens WHERE nome = 'Suporte Teste'),
+    (SELECT id FROM Itens WHERE nome = 'peitoralSuporte'), 1, TRUE, 15
+),
+(
+    (SELECT id FROM personagens WHERE nome = 'Suporte Teste'),
+    (SELECT id FROM Itens WHERE nome = 'calçaSuporte'), 1, TRUE, 17
+),
+(
+    (SELECT id FROM personagens WHERE nome = 'Suporte Teste'),
+    (SELECT id FROM Itens WHERE nome = 'botasSuporte'), 1, TRUE, 18
+),
+(
+    (SELECT id FROM personagens WHERE nome = 'Suporte Teste'),
+    (SELECT id FROM Itens WHERE nome = 'Anel'), 1, TRUE, 1
+),
+(
+    (SELECT id FROM personagens WHERE nome = 'Tanque Teste'),
+    (SELECT id FROM Itens WHERE nome = 'escudo_improvisado'), 1, TRUE, 0
+),
+(
+    (SELECT id FROM personagens WHERE nome = 'Tanque Teste'),
+    (SELECT id FROM Itens WHERE nome = 'marreta'), 1, TRUE, 1
+),
+(
+    (SELECT id FROM personagens WHERE nome = 'Tanque Teste'),
+    (SELECT id FROM Itens WHERE nome = 'capaceteTank'), 1, TRUE, 16
+),
+(
+    (SELECT id FROM personagens WHERE nome = 'Tanque Teste'),
+    (SELECT id FROM Itens WHERE nome = 'peitoralTank'), 1, TRUE, 15
+),
+(
+    (SELECT id FROM personagens WHERE nome = 'Tanque Teste'),
+    (SELECT id FROM Itens WHERE nome = 'calçaTank'), 1, TRUE, 17
+),
+(
+    (SELECT id FROM personagens WHERE nome = 'Tanque Teste'),
+    (SELECT id FROM Itens WHERE nome = 'botasTank'), 1, TRUE, 18
 );
 
 

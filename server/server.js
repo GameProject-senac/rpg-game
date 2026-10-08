@@ -1,5 +1,5 @@
 const path = require('path');
-require('dotenv').config({ path: path.join(__dirname, '.env'), quiet: true });
+require("dotenv").config({ path: path.join(__dirname, ".env") });
 const WebSocket = require('ws');
 const mysql = require('mysql2/promise');
 
@@ -53,6 +53,8 @@ function calcularBonusEquipados(inventario) {
     const bonus = { bonus_hp: 0, bonus_dano: 0, bonus_defesa: 0 };
     for (const item of inventario) {
         if (!item.equipado) continue;
+        const requiredSlot = slotEspecialDoItem(item);
+        if (requiredSlot !== null && Number(item.slot_index) !== requiredSlot) continue;
         bonus.bonus_hp += item.bonus_hp;
         bonus.bonus_dano += item.bonus_dano;
         bonus.bonus_defesa += item.bonus_defesa;
@@ -69,6 +71,22 @@ function recalcularAtributosEfetivos(player) {
     player.hp_max = base.hp_max + bonus.bonus_hp;
     player.dano_base = base.dano_base + bonus.bonus_dano;
     player.defesa_base = base.defesa_base + bonus.bonus_defesa;
+}
+
+function slotEspecialDoItem(item) {
+    const nome = (item?.nome || '').toLocaleLowerCase('pt-BR');
+    if (nome.startsWith('peitoral')) return 15;
+    if (nome.startsWith('capacete') || nome.startsWith('chapéu') || nome === 'capuz') return 16;
+    if (nome.startsWith('calça')) return 17;
+    if (nome.startsWith('botas')) return 18;
+    return null;
+}
+
+function itemCompativelComSlot(item, slotIndex) {
+    if (!Number.isInteger(slotIndex) || slotIndex < 0 || slotIndex > 18) return false;
+    const slotEspecialItem = slotEspecialDoItem(item);
+    if (slotIndex >= 15) return slotEspecialItem === slotIndex;
+    return true;
 }
 
 // Tabela de nível (banco `jogo_pi`, `table_nivel`): xp_necessaria é o XP TOTAL acumulado pra
@@ -533,11 +551,12 @@ wss.on('connection', (ws) => {
                 let invRows;
                 try {
                     [invRows] = await pool.query(
-                        `SELECT inventario.id, inventario.item_id, inventario.quantidade, inventario.equipado,
-                                Itens.nome, Itens.tipo, Itens.bonus_dano, Itens.bonus_defesa, Itens.bonus_hp
+                        `SELECT inventario.id, inventario.item_id, inventario.slot_index, inventario.quantidade, inventario.equipado,
+                                Itens.nome, Itens.descricao, Itens.tipo, Itens.bonus_dano, Itens.bonus_defesa, Itens.bonus_hp
                          FROM inventario
                          JOIN Itens ON Itens.id = inventario.item_id
-                         WHERE inventario.personagem_id = ?`,
+                         WHERE inventario.personagem_id = ?
+                         ORDER BY inventario.id`,
                         [requestedId]
                     );
                 } catch (dbErr) {
@@ -649,6 +668,8 @@ wss.on('connection', (ws) => {
 
                 if (!item) return; // Item não encontrado no inventário deste jogador — ignora
                 if (querEquipar && item.tipo !== 'Equipamento') return; // Só Equipamento pode ser equipado
+                if (querEquipar && slotEspecialDoItem(item) !== null &&
+                    Number(item.slot_index) !== slotEspecialDoItem(item)) return;
 
                 item.equipado = querEquipar;
 
@@ -669,6 +690,76 @@ wss.on('connection', (ws) => {
                     defesa_base: player.defesa_base,
                     hp_atual: player.hp_atual
                 }));
+            }
+            else if (data.type === 'swap_inventory_slots') {
+                const fromSlot = Number(data.fromSlot);
+                const toSlot = Number(data.toSlot);
+                if (player.zona === 'arena_boss' || fromSlot === toSlot) return;
+                if (!Number.isInteger(fromSlot) || !Number.isInteger(toSlot)) return;
+
+                const sourceItem = player.inventario.find(item => Number(item.slot_index) === fromSlot);
+                const targetItem = player.inventario.find(item => Number(item.slot_index) === toSlot);
+                if (!sourceItem || !itemCompativelComSlot(sourceItem, toSlot)) return;
+                if (targetItem && !itemCompativelComSlot(targetItem, fromSlot)) return;
+
+                const sourceRequiredSlot = slotEspecialDoItem(sourceItem);
+                const sourceEquipped = sourceRequiredSlot === null
+                    ? Boolean(sourceItem.equipado)
+                    : toSlot === sourceRequiredSlot;
+                const targetEquipped = targetItem && slotEspecialDoItem(targetItem) !== null
+                    ? fromSlot === slotEspecialDoItem(targetItem)
+                    : Boolean(targetItem?.equipado);
+                let connection;
+
+                try {
+                    connection = await pool.getConnection();
+                    await connection.beginTransaction();
+
+                    if (targetItem) {
+                        const [[row]] = await connection.query(
+                            'SELECT COALESCE(MAX(slot_index), 18) + 1 AS temporary_slot FROM inventario WHERE personagem_id = ?',
+                            [personagemId]
+                        );
+                        await connection.execute(
+                            'UPDATE inventario SET slot_index = ? WHERE id = ? AND personagem_id = ?',
+                            [row.temporary_slot, sourceItem.id, personagemId]
+                        );
+                        await connection.execute(
+                            'UPDATE inventario SET slot_index = ?, equipado = ? WHERE id = ? AND personagem_id = ?',
+                            [fromSlot, targetEquipped, targetItem.id, personagemId]
+                        );
+                    }
+
+                    await connection.execute(
+                        'UPDATE inventario SET slot_index = ?, equipado = ? WHERE id = ? AND personagem_id = ?',
+                        [toSlot, sourceEquipped, sourceItem.id, personagemId]
+                    );
+                    await connection.commit();
+
+                    sourceItem.slot_index = toSlot;
+                    sourceItem.equipado = sourceEquipped;
+                    if (targetItem) {
+                        targetItem.slot_index = fromSlot;
+                        targetItem.equipado = targetEquipped;
+                    }
+                    player.inventario.sort((first, second) => first.slot_index - second.slot_index);
+                    recalcularAtributosEfetivos(player);
+
+                    ws.send(JSON.stringify({ type: 'inventory_update', personagem_id: personagemId, itens: player.inventario }));
+                    ws.send(JSON.stringify({
+                        type: 'stats_updated',
+                        personagem_id: personagemId,
+                        hp_max: player.hp_max,
+                        dano_base: player.dano_base,
+                        defesa_base: player.defesa_base,
+                        hp_atual: player.hp_atual
+                    }));
+                } catch (dbErr) {
+                    if (connection) await connection.rollback();
+                    console.error('[swap_inventory_slots] Erro ao trocar posições:', dbErr);
+                } finally {
+                    if (connection) connection.release();
+                }
             }
             // AÇÃO: Combate (Encostou no Inimigo)
             else if (data.type === 'attack_enemy') {
@@ -706,7 +797,8 @@ wss.on('connection', (ws) => {
                         enemyId: enemy.id,
                         playerId: player.id,
                         enemy_hp: enemy.hp_atual,
-                        player_hp: player.hp_atual
+                        player_hp: player.hp_atual,
+                        damage_dealt: danoEfetivo
                     });
 
                     // Caminho único de XP (sem pico de abate): todo golpe, inclusive o que mata, dá
@@ -878,16 +970,24 @@ wss.on('connection', (ws) => {
                         await pool.query('UPDATE inventario SET quantidade = ? WHERE id = ?', [novaQuantidade, invId]);
                     } else {
                         // INSERE se não tem
-                        await pool.query('INSERT INTO inventario (personagem_id, item_id, quantidade, equipado) VALUES (?, ?, ?, 0)', [personagemId, itemNoChao.item_id, itemNoChao.quantidade]);
+                        const occupiedSlots = new Set(player.inventario.map(item => Number(item.slot_index)));
+                        let slotIndex = 0;
+                        while (slotIndex < 15 && occupiedSlots.has(slotIndex)) slotIndex++;
+                        if (slotIndex >= 15) throw new Error('Mochila sem slots livres para novo item.');
+                        await pool.query(
+                            'INSERT INTO inventario (personagem_id, item_id, slot_index, quantidade, equipado) VALUES (?, ?, ?, ?, 0)',
+                            [personagemId, itemNoChao.item_id, slotIndex, itemNoChao.quantidade]
+                        );
                     }
 
                     // Recarrega o inventário em memória (usando o JOIN com Itens para popular nome/tipo/bônus corretamente)
                     const [invRows] = await pool.query(
-                        `SELECT inventario.id, inventario.item_id, inventario.quantidade, inventario.equipado,
-                                Itens.nome, Itens.tipo, Itens.bonus_dano, Itens.bonus_defesa, Itens.bonus_hp
+                        `SELECT inventario.id, inventario.item_id, inventario.slot_index, inventario.quantidade, inventario.equipado,
+                                Itens.nome, Itens.descricao, Itens.tipo, Itens.bonus_dano, Itens.bonus_defesa, Itens.bonus_hp
                          FROM inventario
                          JOIN Itens ON Itens.id = inventario.item_id
-                         WHERE inventario.personagem_id = ?`,
+                         WHERE inventario.personagem_id = ?
+                         ORDER BY inventario.id`,
                         [personagemId]
                     );
                     player.inventario = invRows;

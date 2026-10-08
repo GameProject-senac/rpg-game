@@ -185,6 +185,12 @@ $$\text{Dano Efetivo} = \max\left(1, \; \text{Dano Base do Atacante} - \text{Def
 * O sistema calcula a taxa de drop e valida se a coordenada de morte $(x, y)$ está em uma área transitável do Tilemap.
 * Se a célula do Tilemap for sólida/parede, o item é deslocado para a célula livre transitável mais próxima (*safe respawn*).
 
+### CONTRATO DO EVENTO DE COMBATE E HUD DE MANA
+
+Nos `combat_event` que resultam de um ataque de jogador, o servidor envia `damage_dealt` com o dano efetivo causado ao inimigo (limitado ao HP restante, sem overkill). O client encaminha esse valor apenas para a UI do atacante, que mantém a soma dos últimos 5 segundos. Eventos de reset de boss não representam um ataque e não incluem esse campo.
+
+Mana ainda não é um recurso de gameplay persistido: a barra exibida no HUD é apenas visual e fica cheia até existir regra de consumo/recuperação e estado autoritativo no servidor. Não adicionar coluna de mana ao banco antes dessa definição.
+
 
 
 ---

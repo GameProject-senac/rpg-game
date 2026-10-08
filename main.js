@@ -11,6 +11,10 @@ const config = {
     type: Phaser.AUTO,
     width: 1920,
     height: 920,
+    scale: {
+        mode: Phaser.Scale.FIT,
+        autoCenter: Phaser.Scale.CENTER_BOTH
+    },
     backgroundColor: '#0a0a0a',
     // Integra a física a cada frame pelo tempo decorrido, inclusive em monitores de 120 Hz.
     physics: { default: 'arcade', arcade: { gravity: { y: 0 }, fixedStep: false } },
