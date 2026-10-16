@@ -63,15 +63,33 @@ export function ensureWarriorAnimations(scene) {
     register8Dir(scene, 'warrior-run',   'warrior-run',   15, -1);
 
     // 2. Combate Corpo a Corpo
-    register8Dir(scene, 'warrior-melee',  'warrior-melee',  16, 0);
-    register8Dir(scene, 'warrior-melee2', 'warrior-melee2', 16, 0);
-    register8Dir(scene, 'warrior-spin',   'warrior-spin',   16, 0);
+    register8Dir(scene, 'warrior-melee',     'warrior-melee',     16, 0);
+    register8Dir(scene, 'warrior-melee2',    'warrior-melee2',    16, 0);
+    register8Dir(scene, 'warrior-spin',      'warrior-spin',      16, 0);
+    register8Dir(scene, 'warrior-melee-run', 'warrior-melee-run', 16, 0);
+    register8Dir(scene, 'warrior-pummel',    'warrior-pummel',    16, 0);
 
     // 3. Defesa, Mobilidade e Especiais
-    register8Dir(scene, 'warrior-block',   'warrior-block',   14, 0);
-    register8Dir(scene, 'warrior-roll',    'warrior-roll',    18, 0);
-    register8Dir(scene, 'warrior-special', 'warrior-special', 15, 0);
-    register8Dir(scene, 'warrior-kick',    'warrior-kick',    15, 0);
+    register8Dir(scene, 'warrior-block',     'warrior-block',     14, 0);
+    register8Dir(scene, 'warrior-block-mid', 'warrior-block-mid', 14, -1);
+    register8Dir(scene, 'warrior-roll',      'warrior-roll',      18, 0);
+    register8Dir(scene, 'warrior-special',   'warrior-special',   15, 0);
+    register8Dir(scene, 'warrior-special2',  'warrior-special2',  15, 0);
+    register8Dir(scene, 'warrior-kick',      'warrior-kick',      15, 0);
+    register8Dir(scene, 'warrior-cast-spell','warrior-cast-spell',15, 0);
+    register8Dir(scene, 'warrior-unsheath',  'warrior-unsheath',  15, 0);
+    register8Dir(scene, 'warrior-front-flip','warrior-front-flip',16, 0);
+    register8Dir(scene, 'warrior-turn180',   'warrior-turn180',   14, 0);
+
+    // 3b. Agachado, deslocamento lateral/traseiro e deslize (integrados de DG-map/)
+    register8Dir(scene, 'warrior-crouch-idle', 'warrior-crouch-idle', 10, -1);
+    register8Dir(scene, 'warrior-crouch-run',  'warrior-crouch-run',  12, -1);
+    register8Dir(scene, 'warrior-run-backwards','warrior-run-backwards', 15, -1);
+    register8Dir(scene, 'warrior-strafe-left', 'warrior-strafe-left', 15, -1);
+    register8Dir(scene, 'warrior-strafe-right','warrior-strafe-right',15, -1);
+    register8Dir(scene, 'warrior-slide-start', 'warrior-slide-start', 16, 0);
+    register8Dir(scene, 'warrior-slide',       'warrior-slide',       16, -1);
+    register8Dir(scene, 'warrior-slide-end',   'warrior-slide-end',   16, 0);
 
     // 4. Reações a Dano e Morte
     register8Dir(scene, 'warrior-hit', 'warrior-hit', 14, 0);

@@ -36,7 +36,26 @@ export class Preload extends Phaser.Scene {
         this.load.spritesheet('warrior-hit', 'assets/sprites/warrior/take_damage.png', { frameWidth: 128, frameHeight: 128 });
         this.load.spritesheet('warrior-die', 'assets/sprites/warrior/die.png', { frameWidth: 128, frameHeight: 128 });
         this.load.spritesheet('warrior-special', 'assets/sprites/warrior/special1.png', { frameWidth: 128, frameHeight: 128 });
+        this.load.spritesheet('warrior-special2', 'assets/sprites/warrior/special2.png', { frameWidth: 128, frameHeight: 128 });
         this.load.spritesheet('warrior-kick', 'assets/sprites/warrior/kick.png', { frameWidth: 128, frameHeight: 128 });
+
+        // Pacote adicional de animações (integrado a partir de DG-map/): agachar, deslizar,
+        // correr de costas, strafe lateral, giro de 180°, conjuração e desembainhar.
+        this.load.spritesheet('warrior-turn180', 'assets/sprites/warrior/turn_180.png', { frameWidth: 128, frameHeight: 128 });
+        this.load.spritesheet('warrior-cast-spell', 'assets/sprites/warrior/cast_spell.png', { frameWidth: 128, frameHeight: 128 });
+        this.load.spritesheet('warrior-crouch-idle', 'assets/sprites/warrior/crouch_idle.png', { frameWidth: 128, frameHeight: 128 });
+        this.load.spritesheet('warrior-crouch-run', 'assets/sprites/warrior/crouch_run.png', { frameWidth: 128, frameHeight: 128 });
+        this.load.spritesheet('warrior-front-flip', 'assets/sprites/warrior/front_flip.png', { frameWidth: 128, frameHeight: 128 });
+        this.load.spritesheet('warrior-melee-run', 'assets/sprites/warrior/melee_run.png', { frameWidth: 128, frameHeight: 128 });
+        this.load.spritesheet('warrior-pummel', 'assets/sprites/warrior/pummel.png', { frameWidth: 128, frameHeight: 128 });
+        this.load.spritesheet('warrior-run-backwards', 'assets/sprites/warrior/run_backwards.png', { frameWidth: 128, frameHeight: 128 });
+        this.load.spritesheet('warrior-block-mid', 'assets/sprites/warrior/shield_block_mid.png', { frameWidth: 128, frameHeight: 128 });
+        this.load.spritesheet('warrior-slide', 'assets/sprites/warrior/slide.png', { frameWidth: 128, frameHeight: 128 });
+        this.load.spritesheet('warrior-slide-end', 'assets/sprites/warrior/slide_end.png', { frameWidth: 128, frameHeight: 128 });
+        this.load.spritesheet('warrior-slide-start', 'assets/sprites/warrior/slide_start.png', { frameWidth: 128, frameHeight: 128 });
+        this.load.spritesheet('warrior-strafe-left', 'assets/sprites/warrior/strafe_left.png', { frameWidth: 128, frameHeight: 128 });
+        this.load.spritesheet('warrior-strafe-right', 'assets/sprites/warrior/strafe_right.png', { frameWidth: 128, frameHeight: 128 });
+        this.load.spritesheet('warrior-unsheath', 'assets/sprites/warrior/unsheath_sword.png', { frameWidth: 128, frameHeight: 128 });
 
         // Assets dos Inimigos
         // Slime: 32x32 (Comum e Fraco)
