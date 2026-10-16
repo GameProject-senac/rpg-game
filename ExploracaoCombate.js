@@ -74,9 +74,9 @@ export class ExploracaoCombate extends Phaser.Scene {
         mapaNormal.createLayer('arvores 2', todosTilesets, 0, 0).setDepth(-2);
         mapaNormal.createLayer('arvores', todosTilesets, 0, 0).setDepth(-1);
 
-        this.add.text(10, 10, 'SISTEMA ONLINE - ESC para voltar', { color: '#00ff00' }).setScrollFactor(0);
+        this.add.text(10, 220, 'SISTEMA ONLINE - ESC para voltar', { color: '#00ff00' }).setScrollFactor(0);
         // S4 (Round 2): indicador transitório de subida de nível — texto simples, some sozinho.
-        this.levelUpText = this.add.text(10, 30, '', { color: '#00ffff', fontSize: '18px' }).setScrollFactor(0);
+        this.levelUpText = this.add.text(10, 198, '', { color: '#00ffff', fontSize: '18px' }).setScrollFactor(0);
         this.player = this.add.rectangle(1000, 1000, 40, 40, 0x00ffff);
         this.physics.add.existing(this.player);
         this.player.body.setCollideWorldBounds(true);
@@ -217,6 +217,7 @@ export class ExploracaoCombate extends Phaser.Scene {
         // é autoritária no servidor (inventory_open/close + guarda em attack_enemy/player_move);
         // aqui só espelhamos o estado pra travar o input local e evitar tráfego de movimento inútil.
         this.inventoryOpen = false;
+        this.registry.set('inventoryOpen', false);
         this.input.keyboard.addCapture(Phaser.Input.Keyboard.KeyCodes.TAB); // senão o browser tira o foco do canvas
         this.onInventoryToggle = () => this.toggleInventoryScreen();
         this.input.keyboard.on('keydown-TAB', this.onInventoryToggle);
@@ -380,14 +381,26 @@ export class ExploracaoCombate extends Phaser.Scene {
 
     // RESULTADO DE COMBATE (HP UPDATE)
     handleCombatEvent(data) {
+        const enemy = this.enemyData.get(data.enemyId);
+        const enemyHpBefore = Number(enemy?.hp_atual);
         if (data.playerId === this.myId) {
             this.playerStats.hp_atual = data.player_hp;
             this.atualizarStatsUI();
+            const danoInformado = Number(data.damage_dealt);
+            const danoPeloHp = Number.isFinite(enemyHpBefore) && Number.isFinite(Number(data.enemy_hp))
+                ? Math.min(Math.max(0, enemyHpBefore - Number(data.enemy_hp)), Math.max(0, enemyHpBefore))
+                : 0;
+            const danoCausado = Number.isFinite(danoInformado) && danoInformado > 0
+                ? danoInformado
+                : danoPeloHp;
+            if (Number.isFinite(danoCausado) && danoCausado > 0) {
+                this.game.events.emit('damage_dealt', danoCausado);
+            }
         } else if (this.otherPlayers.has(data.playerId)) {
             this.otherPlayers.get(data.playerId).hp_atual = data.player_hp;
         }
-        if (this.enemyData.has(data.enemyId)) {
-            this.enemyData.get(data.enemyId).hp_atual = data.enemy_hp;
+        if (enemy) {
+            enemy.hp_atual = data.enemy_hp;
         }
     }
 
