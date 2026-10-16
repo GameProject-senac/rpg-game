@@ -1,0 +1,148 @@
+{
+  "group_id": "79449295-705f-4fcf-ade1-b7c3301b4adb",
+  "states": [
+    {
+      "character": {
+        "id": "d39c6d93-422c-43ab-b19d-0e0db269ff43",
+        "name": "Idle",
+        "prompt": "Crie uma spritesheet de um mago original para RPG 2D Top-Down, compat\u00edvel com Godot, em pixel art e com fundo transparente PNG.  O personagem deve ter capuz, manto, cajado m\u00e1gico e efeitos em tons de azul e roxo.  Inclua **8 dire\u00e7\u00f5es**: norte, sul, leste, oeste e as quatro diagonais.  Anima\u00e7\u00f5es necess\u00e1rias: - Idle: parado com movimento suave. - Walk: caminhada fluida. - Run: corrida r\u00e1pida e aprimorada. - Attack: ataque m\u00e1gico padr\u00e3o \u00e0 dist\u00e2ncia. - Skills: bola de fogo, raio arcano, explos\u00e3o m\u00e1gica e teleporte.  Organize a spritesheet com **poucas linhas, anima\u00e7\u00f5es agrupadas e c\u00e9lulas uniformes**, preferencialmente de 64\u00d764 pixels. Mantenha o personagem consistente em todas as dire\u00e7\u00f5es, sem cortes, sem fundo, sem textos e sem marcas-d'\u00e1gua.  Proj\u00e9teis e efeitos de impacto devem ficar em sprites separados quando necess\u00e1rio. Garanta compatibilidade com AnimatedSprite2D e SpriteFrames do Godot. Priorize as anima\u00e7\u00f5es de idle, walk, run e ataque nas oito dire\u00e7\u00f5es antes das habilidades especiais.  N\u00e3o gere apenas uma ilustra\u00e7\u00e3o: produza sprites animados utiliz\u00e1veis em um jogo real.",
+        "size": {
+          "width": 48,
+          "height": 48
+        },
+        "template_id": "mannequin",
+        "directions": 8,
+        "view": "low top-down",
+        "created_at": "2026-10-13T23:14:22.835352+00:00"
+      },
+      "folder": "Idle",
+      "frames": {
+        "rotations": {
+          "south": "Idle/rotations/south.png",
+          "south-east": "Idle/rotations/south-east.png",
+          "east": "Idle/rotations/east.png",
+          "north-east": "Idle/rotations/north-east.png",
+          "north": "Idle/rotations/north.png",
+          "north-west": "Idle/rotations/north-west.png",
+          "west": "Idle/rotations/west.png",
+          "south-west": "Idle/rotations/south-west.png"
+        },
+        "animations": {}
+      }
+    },
+    {
+      "character": {
+        "id": "d44ca88c-be45-41ca-ac9f-baca3df4f36d",
+        "name": "criar ele morrendo",
+        "prompt": "Crie uma spritesheet de um mago original para RPG 2D Top-Down, compat\u00edvel com Godot, em pixel art e com fundo transparente PNG.  O personagem deve ter capuz, manto, cajado m\u00e1gico e efeitos em tons de azul e roxo.  Inclua **8 dire\u00e7\u00f5es**: norte, sul, leste, oeste e as quatro diagonais.  Anima\u00e7\u00f5es necess\u00e1rias: - Idle: parado com movimento suave. - Walk: caminhada fluida. - Run: corrida r\u00e1pida e aprimorada. - Attack: ataque m\u00e1gico padr\u00e3o \u00e0 dist\u00e2ncia. - Skills: bola de fogo, raio arcano, explos\u00e3o m\u00e1gica e teleporte.  Organize a spritesheet com **poucas linhas, anima\u00e7\u00f5es agrupadas e c\u00e9lulas uniformes**, preferencialmente de 64\u00d764 pixels. Mantenha o personagem consistente em todas as dire\u00e7\u00f5es, sem cortes, sem fundo, sem textos e sem marcas-d'\u00e1gua.  Proj\u00e9teis e efeitos de impacto devem ficar em sprites separados quando necess\u00e1rio. Garanta compatibilidade com AnimatedSprite2D e SpriteFrames do Godot. Priorize as anima\u00e7\u00f5es de idle, walk, run e ataque nas oito dire\u00e7\u00f5es antes das habilidades especiais.  N\u00e3o gere apenas uma ilustra\u00e7\u00e3o: produza sprites animados utiliz\u00e1veis em um jogo real.",
+        "size": {
+          "width": 48,
+          "height": 48
+        },
+        "template_id": "mannequin",
+        "directions": 8,
+        "view": "low top-down",
+        "created_at": "2026-10-15T22:50:47.529071+00:00"
+      },
+      "folder": "criar_ele_morrendo",
+      "frames": {
+        "rotations": {
+          "south": "criar_ele_morrendo/rotations/south.png",
+          "south-east": "criar_ele_morrendo/rotations/south-east.png",
+          "east": "criar_ele_morrendo/rotations/east.png",
+          "north-east": "criar_ele_morrendo/rotations/north-east.png",
+          "north": "criar_ele_morrendo/rotations/north.png",
+          "north-west": "criar_ele_morrendo/rotations/north-west.png",
+          "west": "criar_ele_morrendo/rotations/west.png",
+          "south-west": "criar_ele_morrendo/rotations/south-west.png"
+        },
+        "animations": {
+          "Full_Sprint": {
+            "north-west": [
+              "criar_ele_morrendo/animations/Full_Sprint/north-west/frame_000.png",
+              "criar_ele_morrendo/animations/Full_Sprint/north-west/frame_001.png",
+              "criar_ele_morrendo/animations/Full_Sprint/north-west/frame_002.png",
+              "criar_ele_morrendo/animations/Full_Sprint/north-west/frame_003.png",
+              "criar_ele_morrendo/animations/Full_Sprint/north-west/frame_004.png",
+              "criar_ele_morrendo/animations/Full_Sprint/north-west/frame_005.png",
+              "criar_ele_morrendo/animations/Full_Sprint/north-west/frame_006.png",
+              "criar_ele_morrendo/animations/Full_Sprint/north-west/frame_007.png"
+            ],
+            "south": [
+              "criar_ele_morrendo/animations/Full_Sprint/south/frame_000.png",
+              "criar_ele_morrendo/animations/Full_Sprint/south/frame_001.png",
+              "criar_ele_morrendo/animations/Full_Sprint/south/frame_002.png",
+              "criar_ele_morrendo/animations/Full_Sprint/south/frame_003.png",
+              "criar_ele_morrendo/animations/Full_Sprint/south/frame_004.png",
+              "criar_ele_morrendo/animations/Full_Sprint/south/frame_005.png",
+              "criar_ele_morrendo/animations/Full_Sprint/south/frame_006.png",
+              "criar_ele_morrendo/animations/Full_Sprint/south/frame_007.png"
+            ],
+            "west": [
+              "criar_ele_morrendo/animations/Full_Sprint/west/frame_000.png",
+              "criar_ele_morrendo/animations/Full_Sprint/west/frame_001.png",
+              "criar_ele_morrendo/animations/Full_Sprint/west/frame_002.png",
+              "criar_ele_morrendo/animations/Full_Sprint/west/frame_003.png",
+              "criar_ele_morrendo/animations/Full_Sprint/west/frame_004.png",
+              "criar_ele_morrendo/animations/Full_Sprint/west/frame_005.png",
+              "criar_ele_morrendo/animations/Full_Sprint/west/frame_006.png",
+              "criar_ele_morrendo/animations/Full_Sprint/west/frame_007.png"
+            ],
+            "south-east": [
+              "criar_ele_morrendo/animations/Full_Sprint/south-east/frame_000.png",
+              "criar_ele_morrendo/animations/Full_Sprint/south-east/frame_001.png",
+              "criar_ele_morrendo/animations/Full_Sprint/south-east/frame_002.png",
+              "criar_ele_morrendo/animations/Full_Sprint/south-east/frame_003.png",
+              "criar_ele_morrendo/animations/Full_Sprint/south-east/frame_004.png",
+              "criar_ele_morrendo/animations/Full_Sprint/south-east/frame_005.png",
+              "criar_ele_morrendo/animations/Full_Sprint/south-east/frame_006.png",
+              "criar_ele_morrendo/animations/Full_Sprint/south-east/frame_007.png"
+            ],
+            "south-west": [
+              "criar_ele_morrendo/animations/Full_Sprint/south-west/frame_000.png",
+              "criar_ele_morrendo/animations/Full_Sprint/south-west/frame_001.png",
+              "criar_ele_morrendo/animations/Full_Sprint/south-west/frame_002.png",
+              "criar_ele_morrendo/animations/Full_Sprint/south-west/frame_003.png",
+              "criar_ele_morrendo/animations/Full_Sprint/south-west/frame_004.png",
+              "criar_ele_morrendo/animations/Full_Sprint/south-west/frame_005.png",
+              "criar_ele_morrendo/animations/Full_Sprint/south-west/frame_006.png",
+              "criar_ele_morrendo/animations/Full_Sprint/south-west/frame_007.png"
+            ],
+            "north": [
+              "criar_ele_morrendo/animations/Full_Sprint/north/frame_000.png",
+              "criar_ele_morrendo/animations/Full_Sprint/north/frame_001.png",
+              "criar_ele_morrendo/animations/Full_Sprint/north/frame_002.png",
+              "criar_ele_morrendo/animations/Full_Sprint/north/frame_003.png",
+              "criar_ele_morrendo/animations/Full_Sprint/north/frame_004.png",
+              "criar_ele_morrendo/animations/Full_Sprint/north/frame_005.png",
+              "criar_ele_morrendo/animations/Full_Sprint/north/frame_006.png",
+              "criar_ele_morrendo/animations/Full_Sprint/north/frame_007.png"
+            ],
+            "east": [
+              "criar_ele_morrendo/animations/Full_Sprint/east/frame_000.png",
+              "criar_ele_morrendo/animations/Full_Sprint/east/frame_001.png",
+              "criar_ele_morrendo/animations/Full_Sprint/east/frame_002.png",
+              "criar_ele_morrendo/animations/Full_Sprint/east/frame_003.png",
+              "criar_ele_morrendo/animations/Full_Sprint/east/frame_004.png",
+              "criar_ele_morrendo/animations/Full_Sprint/east/frame_005.png",
+              "criar_ele_morrendo/animations/Full_Sprint/east/frame_006.png",
+              "criar_ele_morrendo/animations/Full_Sprint/east/frame_007.png"
+            ],
+            "north-east": [
+              "criar_ele_morrendo/animations/Full_Sprint/north-east/frame_000.png",
+              "criar_ele_morrendo/animations/Full_Sprint/north-east/frame_001.png",
+              "criar_ele_morrendo/animations/Full_Sprint/north-east/frame_002.png",
+              "criar_ele_morrendo/animations/Full_Sprint/north-east/frame_003.png",
+              "criar_ele_morrendo/animations/Full_Sprint/north-east/frame_004.png",
+              "criar_ele_morrendo/animations/Full_Sprint/north-east/frame_005.png",
+              "criar_ele_morrendo/animations/Full_Sprint/north-east/frame_006.png",
+              "criar_ele_morrendo/animations/Full_Sprint/north-east/frame_007.png"
+            ]
+          }
+        }
+      }
+    }
+  ],
+  "export_version": "3.1",
+  "export_date": "2026-10-15T23:48:09.468101"
+}
