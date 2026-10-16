@@ -861,10 +861,11 @@ wss.on('connection', (ws) => {
                 // Se o item não existe mais (já foi coletado por outro ou expirou), ignora silenciosamente
                 if (!itemNoChao) return; 
 
-                // Remove do chão imediatamente para evitar corrida de coleta multiplayer
+                // Remove do chão imediatamente para evitar corrida de coleta multiplayer.
+                // O broadcast de remoção só acontece DEPOIS da persistência confirmar (ver try/catch
+                // abaixo) — senão o item some pra todo mundo mesmo se o INSERT/UPDATE falhar.
                 delete gameState.itensNoChao[dropId];
-                broadcast({ type: 'item_removed', dropId: dropId, reason: 'collected' });
-                
+
                 console.log(`[PICKUP] Jogador ${personagemId} coletou ${itemNoChao.nome} x${itemNoChao.quantidade} (${dropId})`);
 
                 try {
@@ -891,12 +892,19 @@ wss.on('connection', (ws) => {
                         [personagemId]
                     );
                     player.inventario = invRows;
-                    
+
+                    // Só agora, com a coleta confirmada no banco, o item some pra todo mundo
+                    broadcast({ type: 'item_removed', dropId: dropId, reason: 'collected' });
+
                     // Avisa o cliente para atualizar a UI do inventário
                     ws.send(JSON.stringify({ type: 'inventory_update', personagem_id: personagemId, itens: player.inventario }));
 
                 } catch (dbErr) {
                     console.error('[pickup_item] Erro ao persistir coleta de item no banco:', dbErr);
+                    // Persistência falhou: devolve o item ao chão (ninguém viu ele sumir, pois o
+                    // broadcast de remoção só acontece depois do banco confirmar) para não perder
+                    // o drop de vez. O sweep de expiração (createdAt) continua valendo normalmente.
+                    gameState.itensNoChao[dropId] = itemNoChao;
                 }
             }
             // AÇÃO: Comando de debug para teleportar para o Boss (Passo 3a)
