@@ -671,14 +671,25 @@ wss.on('connection', (ws) => {
                 if (querEquipar && slotEspecialDoItem(item) !== null &&
                     Number(item.slot_index) !== slotEspecialDoItem(item)) return;
 
-                item.equipado = querEquipar;
-
+                // Persiste ANTES de mudar o estado em memória (AGENTS.md/auditoria, achado A04):
+                // se o UPDATE falhar, a memória e o banco ficavam divergentes — o client via
+                // sucesso (bônus aplicado) mas o reconnect carregava o valor antigo do banco.
                 try {
                     await pool.query('UPDATE inventario SET equipado = ? WHERE id = ?', [querEquipar, item.id]);
                 } catch (dbErr) {
                     console.error(`[${data.type}] Erro ao gravar equipado de ${item.id}:`, dbErr);
+                    // Não aplica em memória nem recalcula — reenvia o estado real (inalterado)
+                    // pro client, pra UI não ficar mostrando um equip que não foi confirmado.
+                    ws.send(JSON.stringify({ type: 'inventory_update', personagem_id: personagemId, itens: player.inventario }));
+                    return;
                 }
 
+                // Rebusca por id em vez de mutar a referência pré-await: se um pickup_item
+                // concorrente trocou player.inventario inteiro (nova leitura do banco) enquanto
+                // este UPDATE estava em voo, `item` aponta pra um objeto órfão fora do array
+                // atual — mutá-lo diretamente perderia a mudança (AGENTS.md/auditoria, achado A04).
+                const itemAtual = player.inventario.find(i => i.id === data.inventario_id);
+                if (itemAtual) itemAtual.equipado = querEquipar;
                 recalcularAtributosEfetivos(player);
 
                 ws.send(JSON.stringify({ type: 'inventory_update', personagem_id: personagemId, itens: player.inventario }));
@@ -961,16 +972,18 @@ wss.on('connection', (ws) => {
                 console.log(`[PICKUP] Jogador ${personagemId} coletou ${itemNoChao.nome} x${itemNoChao.quantidade} (${dropId})`);
 
                 try {
-                    // Checa se o jogador já tem o item no inventário
-                    const [rows] = await pool.query('SELECT id, quantidade FROM inventario WHERE personagem_id = ? AND item_id = ?', [personagemId, itemNoChao.item_id]);
-                    
-                    if (rows.length > 0) {
-                        // INCREMENTA se já tem
-                        const invId = rows[0].id;
-                        const novaQuantidade = rows[0].quantidade + itemNoChao.quantidade;
-                        await pool.query('UPDATE inventario SET quantidade = ? WHERE id = ?', [novaQuantidade, invId]);
-                    } else {
-                        // INSERE se não tem
+                    // Incremento atômico: UPDATE ... SET quantidade = quantidade + ? é resolvido
+                    // pelo próprio MySQL sem round-trip de leitura, então duas coletas concorrentes
+                    // do mesmo item (duas mensagens pickup_item da mesma conexão antes da primeira
+                    // terminar) não perdem incremento um do outro — era exatamente o bug do SELECT
+                    // + cálculo em JS + UPDATE anterior (AGENTS.md/auditoria, achado A02).
+                    const [updateResult] = await pool.query(
+                        'UPDATE inventario SET quantidade = quantidade + ? WHERE personagem_id = ? AND item_id = ?',
+                        [itemNoChao.quantidade, personagemId, itemNoChao.item_id]
+                    );
+
+                    if (updateResult.affectedRows === 0) {
+                        // Não tinha o item ainda: precisa de slot livre pra criar a linha nova.
                         const occupiedSlots = new Set(player.inventario.map(item => Number(item.slot_index)));
                         let slotIndex = 0;
                         while (slotIndex < 15 && occupiedSlots.has(slotIndex)) slotIndex++;
