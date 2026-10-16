@@ -6,7 +6,9 @@
  * caçar endereço/formato espalhados pelas cenas.
  */
 
-export const SERVER_URL = 'ws://localhost:8080';
+// Deriva o host do servidor de onde a própria página foi carregada — funciona tanto em
+// localhost (dev local) quanto acessando pelo IP de LAN de outra máquina, sem hardcode.
+export const SERVER_URL = `ws://${window.location.hostname}:8080`;
 
 export function sendMessage(socket, data) {
     socket.send(JSON.stringify(data));
