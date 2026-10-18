@@ -11,9 +11,10 @@ Lições já pagas em bugs reais ou decisões de arquitetura fechadas em discuss
 **Técnicas:**
 
 * **DECIMAL do MySQL volta como STRING no driver `mysql2`.** Colunas `DECIMAL` (ex.: `personagens.experiencia`, `mobs.experiencia_dropada`) chegam como *string*, não `number`. Por quê: `+`/`*` direto vira concatenação ou `NaN` — já causou o bug real do "XP = NaN", e `node --check` não pega (é erro de runtime/tipo, não de sintaxe). SEMPRE `Number(...)` antes de aritmética. `INT`/`FLOAT` chegam nativos, sem esse problema — o cuidado é só de `DECIMAL`.
+* **`#` em valor do `.env` trunca a senha silenciosamente (`dotenv`).** Em valor SEM aspas, o `dotenv` trata `#` como início de comentário: `DB_PASSWORD=Rpg_App#2026` chega no `process.env` como `Rpg_App` (7 chars em vez de 12). Por quê: o sintoma é `ER_ACCESS_DENIED_ERROR` no boot do servidor **enquanto a mesma senha funciona no CLI `mysql`** — o CLI recebe a senha inteira, o Node recebe metade, e isso manda o debug pra direção errada (GRANT, host, política de senha). Sempre **aspear** valores com caractere especial: `DB_PASSWORD="Rpg_App#2026"`. Vale pra `#` e para qualquer coisa que o parser possa comer; quando em dúvida, aspeie. Confirmar com `node -e "require('dotenv').config({path:'server/.env'}); console.log(process.env.DB_PASSWORD.length)"` antes de culpar o banco.
 * **Só o teste manual no navegador valida.** Scripts e `node --check` passam com bugs de runtime, de client, de morte/respawn. Por quê: vários bugs reais (o NaN do XP, comportamento de morte/respawn) só apareceram no teste de campo manual — nada fecha sem isso.
 * **Cache do navegador morde ao trocar arquivos de client.** Hard-refresh (Ctrl+Shift+R) sempre que mudar um arquivo de cena/client. Por quê: senão o navegador serve a versão velha e parece que a mudança não pegou.
-* **Troca de máquina: git traz código, NÃO traz banco nem `.env`.** Cada máquina nova precisa rodar `db/setup_banco.sql` (destrutivo), recriar `server/.env` (gitignored) e o `GRANT` do usuário `rpg_app`. Por quê: sintomas de esquecer isso ("Unknown column X", tabela vazia, "Access denied") custam tempo de debug pra algo que não é bug de código.
+* **Troca de máquina: git traz código, NÃO traz `node_modules`, banco nem `.env`.** Cada máquina nova precisa de `npm install`, `db/setup_banco.sql` (destrutivo), `server/.env` (gitignored) e o `GRANT` do usuário `rpg_app`. **Runbook completo + tabela de sintoma→causa: `commands.md`** (fonte única, não duplicar o passo a passo aqui). Por quê: sintomas de esquecer isso (`MODULE_NOT_FOUND` em `server.js:2`, "Unknown column X", tabela vazia, "Access denied") custam tempo de debug pra algo que não é bug de código. Nota: **MySQL Workbench não é requisito** — o projeto fala com o banco via `mysql2` (TCP) e pelo CLI `mysql`; a GUI é opcional.
 * **Toda mudança de schema é feita em DUAS frentes que precisam bater.** (a) ALTER/INSERT na máquina atual (efeito imediato) e (b) `db/setup_banco.sql` atualizado (pra máquina nova nascer certa). Por quê: se só uma frente for feita, as máquinas divergem e a próxima troca trava.
 * **Os três "ids" do loot são distintos — não confundir.** `enemy.id` = instância do inimigo no `gameState`; `mob_id` = tipo na tabela `mobs` (todos os "Comum" compartilham); `inventario.id` = linha do inventário; `drop_N` = instância do item no chão. Por quê: `mob_drops` liga por `mob_id`, o combate referencia por `enemy.id` — trocar um pelo outro faz a consulta não achar nada.
 * **Commit + push ao FECHAR cada passo validado.** "Testado" ≠ "salvo no git". Por quê: trabalho não commitado trava a troca de máquina e parece perdido.
@@ -126,7 +127,7 @@ Antes de propor ou escrever qualquer código, execute mentalmente esta sequênci
 ### MAPA DO REPOSITÓRIO
 
 * **`server/`** — autoridade única do jogo. `server.js` (Node + WebSocket `ws`, MySQL via `mysql2/promise`, toda regra de negócio e persistência); `.env`/`.env.example` (credenciais, gitignored — cada máquina tem o seu); scripts `test_*.js` (clientes WebSocket crus de teste, não fazem parte do jogo).
-* **Raiz (`*.js`)** — client Phaser. Cenas da FSM: `Boot`, `Preload`, `MainMenu`, `SelecaoPersonagem`, `Loading`, `HubCentral`, `ExploracaoCombate` (+ `UIScene` rodando em paralelo durante o combate, tela de inventário). `main.js` inicializa o `Phaser.Game`; `networkConfig.js` centraliza `SERVER_URL`/`sendMessage` compartilhados entre cenas.
+* **Raiz (`*.js`)** — client Phaser. Cenas da FSM: `Boot`, `Preload`, `MainMenu`, `SelecaoPersonagem`, `Loading`, `HubCentral`, `ExploracaoCombate` (+ `UIScene` rodando em paralelo durante o combate, tela de inventário). `main.js` inicializa o `Phaser.Game` — inclui `dom: { createContainer: true }`, necessário porque o Phaser não tem input de texto nativo e o campo de nome da `SelecaoPersonagem` é um `<input>` DOM real (entrega cursor, seleção e acentuação de graça). `networkConfig.js` centraliza `SERVER_URL`/`sendMessage` compartilhados entre cenas.
 * **`db/setup_banco.sql`** — fonte única de verdade do schema (ver §07). Único arquivo de schema no repositório; `SchemaCompleto.sql` (raiz) e `server/schema.sql`/`seed_teste.sql` (schema antigo `rpg_game`, pré-migração A1) foram removidos em 2026-09-16 por estarem obsoletos e não usados.
 * **`map/`** — projetos Godot da equipe de arte/design (mapas prontos, gerador procedural, engine de mapa): matéria-prima para a Fase 3/dungeons, ainda não integrada ao client Phaser.
 * **`MAPA E PERSONAGENS/`** — imagens de referência de arte (concept de mapas/personagens/sprites).
@@ -139,9 +140,39 @@ Antes de propor ou escrever qualquer código, execute mentalmente esta sequênci
 A aplicação é governada por uma FSM determinística. Toda transição entre ambientes do jogo ocorre exclusivamente através das 7 cenas declaradas:
 
 ```
-[Boot] ──> [Preload] ──> [MainMenu] ──> [SelecaoPersonagem] ──> [Loading] ──> [HubCentral] <──> [ExploracaoCombate]
+[Boot] ─> [Preload] ─> [MainMenu] ─> [Login] ─> [SelecaoPersonagem] ─> [Loading] ─> [HubCentral] <─> [ExploracaoCombate]
+                                        ▲              ▲                                                     │
+                                        │              └──────────────── falha de conexão ──────────────────┘
+                                        └── sessão expirada / sair da conta ──┘
 
 ```
+
+**8 cenas** (antes 7): `Login` entrou entre `MainMenu` e `SelecaoPersonagem` quando o login/contas (roadmap §7.3) saiu do escopo futuro e foi implementado.
+
+**Transição de retorno por falha de conexão (`ExploracaoCombate` → `SelecaoPersonagem`).** Única transição que não segue o trilho linear, e existe porque sem ela a cena de combate virava um fantasma: se o servidor recusa o `join` (ex.: personagem já em sessão ativa) ou a conexão cai, o `welcome` nunca chega, `playerStats` fica `null` e o jogador fica imóvel, sem inimigos, sem HP e com a textura padrão — porque `spawnEnemy`/`configurePlayerVisualForClass`/`atualizarStatsUI` **só** rodam dentro do `handleWelcome` (auditoria, achado A10). O retorno carrega o motivo pelo `registry` (`connection_error`), que a `SelecaoPersonagem` consome e limpa. O `shutdown` da cena marca `cenaEncerrando` **antes** de fechar o socket, pra um close provocado pela própria troca de cena (inclusive o `scene.restart()` da morte) não ser confundido com queda.
+
+### CONTAS E AUTENTICAÇÃO (o usuário é a identidade absoluta)
+
+Toda conta é criada pelo jogador na cena `Login` — **o banco nasce com zero contas e zero personagens**. `jogadores.Nome` é o usuário de login e ganhou `UNIQUE` (`uq_jogadores_nome`): a colisão é barrada pelo banco (`ER_DUP_ENTRY` no handler `register`), não por um `SELECT` prévio, então não há janela de corrida entre checar e inserir.
+
+* **Senha vai com HASH, nunca em texto puro** — `crypto.scryptSync` (core do Node, zero dependência nova), salt por usuário, formato `scrypt$<salt_hex>$<hash_hex>` em `jogadores.Senha VARCHAR(255)`, comparação com `timingSafeEqual`. Senha em formato desconhecido (ex.: texto puro de seed antigo) **não autentica** — é recusada em vez de cair num caminho de comparação direta. O seed `'senha_teste_123'` foi removido do `setup_banco.sql` por isso.
+* **Limites:** usuário 3–22 caracteres · nome de personagem 3–22 (números e caracteres especiais permitidos, sem lista branca) · **senha mínimo 4**. ⚠️ O mínimo de 4 é **provisório e deliberado**, escolhido pelo dono do projeto para não travar os testes de campo — **não é um mínimo de segurança**, e subir esse valor é item de endurecimento futuro. Todos validados no **servidor**, que é a autoridade; a checagem no client é só conveniência de UI.
+* **`email` é sintetizado** (`<usuario>@local`) no cadastro. A coluna é `NOT NULL` e não participa da autenticação — sintetizar é menos invasivo que alterar o schema da equipe por um campo que o jogo não pede.
+* **Falha de login não distingue** usuário inexistente de senha errada (mensagem única), de propósito: não confirma quais contas existem.
+* **Sessão = token opaco em memória** (`sessoesAuth`, `Map<token, {jogador_id, usuario}>`). O projeto usa Modelo B (conexão curta e independente por ação), então não existe socket persistente onde pendurar a identidade — e aceitar `jogadores_id` vindo do client deixaria qualquer um pedir os personagens de outro. **Limitação conhecida:** o mapa é em memória, então restart do servidor exige login de novo (o client trata via `auth_required` e volta pro `Login`). Fecha de vez com o Modelo A (socket único / `NetworkManager`, §1.2/§7.3).
+* **Posse é verificada no `join`:** o servidor recusa personagem que não pertença à conta autenticada. É isto que fecha a "janela de roubo de personagem pós-morte" que o roadmap §7.3 registrava como aberta enquanto não houvesse login. Autenticação acontece **antes** da reserva em `activeSessions` — pedido sem token não consome a trava.
+* **Teto de personagens é POR CONTA e derivado de `CLASSES`** (`MAX_PERSONAGENS_POR_CONTA = Object.keys(CLASSES).length`, 5 hoje). Derivado, não constante solta, para o teto acompanhar se a equipe adicionar uma classe. O teto é **total**, não um por classe — dá pra ter dois guerreiros dentro do orçamento.
+
+### SELEÇÃO E CRIAÇÃO DE PERSONAGEM
+
+A `SelecaoPersonagem` tem dois caminhos, ambos por conexão curta e independente (Modelo B):
+
+* **Criar novo** (`create_character`) — uma entrada por classe, sempre disponível. Nasce **base**: nível 1, XP 0, **sem** inventário, no centro do mapa normal. É o que destrava co-op real — dois jogadores que querem a mesma classe criam cada um o seu personagem em vez de disputar a única linha daquela classe. O nome vem de um `<input>` DOM e é normalizado/validado no **servidor** (entrada não confiável).
+* **Retomar** — personagens existentes, progresso preservado.
+
+**Nível de nascimento é 1, nunca 0.** A fórmula de atributos usa `nivel - 1` como quantidade de buffs, então nível 0 geraria **-1** buff e um personagem mais fraco que o molde da classe (guerreiro nasceria 90/20/3 em vez de 100/25/5); e como `table_nivel` tem nível 1 = 0 XP, o `concederXP` promoveria pra 1 no primeiro golpe. "Base/zerado" neste sistema **é** o nível 1.
+
+**Não existe marcação "em uso".** Personagem em sessão ativa é **omitido** da lista pelo servidor, não marcado e desabilitado: quem está ocupado não está disponível, e o jogador nunca cai num estado bloqueado porque criar um novo é sempre possível. A recusa de `join` por sessão ativa continua existindo no servidor como rede de segurança para corrida de rede, e agora cai na transição de falha acima.
 
 > **Atualizado na correção do teste de campo da Fase 2:** `SelecaoPersonagem` foi adicionada à FSM (6→7 cenas) para permitir que o jogador escolha qual personagem controlar sem depender de injeção manual via DevTools. Não é uma cena de login — apenas seleção sobre personagens já existentes no banco (login continua fora de escopo). Ver `roadmap_game.md` §1.1 para o modelo de posse (pool compartilhado sem dono, até login existir) e para o modelo de conexão (Modelo B atual / Modelo A alvo).
 

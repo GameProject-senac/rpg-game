@@ -23,8 +23,9 @@ export class MainMenu extends Phaser.Scene {
 
         // Configura a tecla Espaço
         this.input.keyboard.once('keydown-SPACE', () => {
-            // Antes de ir para o Loading, o jogador escolhe qual personagem controlar
-            this.scene.start('SelecaoPersonagem');
+            // Autenticação primeiro: o usuário é a identidade absoluta, e a seleção de
+            // personagem só existe dentro de uma conta (ver Login.js / AGENTS.md §06).
+            this.scene.start('Login');
         });
 
         // Prevenção de vazamento de memória (Regra de Transição de Cenas)

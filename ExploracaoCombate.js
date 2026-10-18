@@ -240,6 +240,11 @@ export class ExploracaoCombate extends Phaser.Scene {
         this.game.events.on('inventory_action', this.onInventoryAction);
 
         this.events.once('shutdown', () => {
+            // Antes de fechar o socket: marca que o close que vem a seguir é nosso, não
+            // uma queda — senão o onclose dispararia handleConnectionLost e tentaria
+            // transicionar de cena durante o próprio shutdown (inclusive no
+            // scene.restart() da morte do jogador).
+            this.cenaEncerrando = true;
             this.events.off('postupdate', this.renderPlayerHp, this);
             this.input.keyboard.removeAllListeners('keydown-ESC');
             this.input.keyboard.removeAllListeners('keydown-T');
@@ -268,6 +273,13 @@ export class ExploracaoCombate extends Phaser.Scene {
     }
 
     initMultiplayer() {
+        // Flags do ciclo de vida da conexão (auditoria, achado A10):
+        // `cenaEncerrando` distingue um close provocado pelo próprio shutdown/restart da
+        // cena (normal, não é falha) de um close vindo do servidor; `falhaTratada` garante
+        // que onerror + onclose, que disparam em sequência na mesma queda, não tentem
+        // transicionar de cena duas vezes.
+        this.cenaEncerrando = false;
+        this.falhaTratada = false;
         this.socket = new WebSocket(SERVER_URL);
 
         // Join automático (item 3): cobre tanto a primeira conexão quanto a reabertura do
@@ -280,7 +292,11 @@ export class ExploracaoCombate extends Phaser.Scene {
                 console.error('[ExploracaoCombate] Sem personagem_id no registry — join não enviado.');
                 return;
             }
-            sendMessage(this.socket, { type: 'join', personagem_id: personagemId });
+            // O token prova a POSSE do personagem: o servidor recusa o join se o personagem
+            // não pertencer à conta autenticada (ver handler `join` em server.js). Sem ele
+            // bastaria conhecer um personagem_id pra entrar com o personagem de outro.
+            const token = this.registry.get('auth_token');
+            sendMessage(this.socket, { type: 'join', personagem_id: personagemId, token });
         };
 
         // Despacho por mapa de handlers em vez de cadeia if/else (fase2_spec.md Pacote 5, §5.1.1).
@@ -309,6 +325,36 @@ export class ExploracaoCombate extends Phaser.Scene {
             if (handler) handler(data);
             else console.warn('[ExploracaoCombate] Mensagem sem handler registrado:', data.type, data);
         };
+
+        // Recusa/queda de conexão (auditoria, achado A10). Sem isto a cena virava um
+        // FANTASMA: o servidor recusa o join (ex.: `ws.close(4000, 'Personagem já está em
+        // uma sessão ativa')`), o `welcome` nunca chega, `playerStats` fica null e o
+        // jogador fica imóvel (guard do update()), sem inimigos, sem HP e com a textura
+        // padrão — porque spawnEnemy/configurePlayerVisualForClass/atualizarStatsUI só
+        // rodam dentro do handleWelcome. A `SelecaoPersonagem` já tratava isso; a cena de
+        // combate era a única sem tratamento.
+        this.socket.onclose = (event) => this.handleConnectionLost(event.reason);
+        this.socket.onerror = () => this.handleConnectionLost('');
+    }
+
+    // Caminho único de falha de conexão da cena de combate. Volta pra seleção de
+    // personagem com o motivo na tela, em vez de deixar a cena num estado morto.
+    handleConnectionLost(motivoDoServidor) {
+        // Close provocado pelo próprio shutdown/restart da cena: esperado, não é falha.
+        if (this.cenaEncerrando || this.falhaTratada) return;
+        this.falhaTratada = true;
+
+        // `event.reason` carrega o motivo autoritário quando o servidor fecha com código
+        // 4000 (join recusado). Em queda de rede vem vazio — daí a mensagem depende de já
+        // estarmos em partida (playerStats preenchido) ou não.
+        const motivo = motivoDoServidor || (this.playerStats
+            ? 'Conexão com o servidor perdida.'
+            : 'Não foi possível entrar com este personagem.');
+        console.warn('[ExploracaoCombate] Conexão encerrada:', motivo);
+
+        // Lido pela SelecaoPersonagem e exibido na tela; ela limpa depois de mostrar.
+        this.registry.set('connection_error', motivo);
+        this.scene.start('SelecaoPersonagem');
     }
 
     // ─────────────────────────────────────────────────────────────────
@@ -320,7 +366,18 @@ export class ExploracaoCombate extends Phaser.Scene {
         this.myId = data.id;
         this.playerStats = data.state.players[this.myId];
         this.playerStats.xp_proximo_nivel = data.xp_proximo_nivel;
+
+        // Posição autoritária de entrada (auditoria, achado A09): o retângulo do player é
+        // criado em (1000, 1000) no create() e, antes, NADA aqui aplicava o x/y que o
+        // servidor acabou de mandar. ~50ms depois o throttle de player_move enviava
+        // (1000, 1000) de volta e sobrescrevia a posição autoritária — ou seja, o
+        // posicao_x/posicao_y gravado no banco era descartado em toda entrada.
+        // Bounds não mudam aqui: o servidor força `zona: 'mapa_normal'` no join e já clampa
+        // a posição carregada aos limites do mapa normal (ver GAME_ZONES em server.js).
+        this.player.setPosition(this.playerStats.x, this.playerStats.y);
+        this.player.body.reset(this.playerStats.x, this.playerStats.y);
         this.playerVisual.setPosition(this.player.x, this.player.y);
+        this.cameras.main.centerOn(this.player.x, this.player.y);
         this.configurePlayerVisualForClass(this.playerStats.classe);
 
         for (const pid in data.state.players) {

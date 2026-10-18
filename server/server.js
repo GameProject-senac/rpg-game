@@ -2,6 +2,7 @@ const path = require('path');
 require('dotenv').config({ path: path.join(__dirname, '.env'), quiet: true });
 const WebSocket = require('ws');
 const mysql = require('mysql2/promise');
+const crypto = require('crypto');
 
 const pool = mysql.createPool({
     host: process.env.DB_HOST,
@@ -26,6 +27,89 @@ const CLASSES = {
 const BUFF_HP = 10;
 const BUFF_DANO = 5;
 const BUFF_DEFESA = 2;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// CONTAS E AUTENTICAÇÃO (roadmap §7.3 — "Login/contas", antes fora de escopo)
+//
+// O usuário é a identidade absoluta: todo personagem pertence a uma conta
+// (`personagens.jogadores_id`), a listagem só devolve os personagens do dono autenticado, e o
+// `join` recusa personagem de outra conta. É isto que fecha a "janela de roubo de personagem"
+// registrada no roadmap.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const USUARIO_MIN_CHARS = 3;
+const USUARIO_MAX_CHARS = 22;
+// Mínimo de 4 por decisão do dono do projeto: valor baixo DE PROPÓSITO, para não travar os
+// testes de campo. Não é um mínimo de segurança — subir isso é item de endurecimento futuro.
+const SENHA_MIN_CHARS = 4;
+const SENHA_MAX_CHARS = 72;
+
+// Teto de personagens por conta = quantidade de classes disponíveis (decisão do dono do
+// projeto). Derivado de CLASSES em vez de constante solta, então se a equipe adicionar uma
+// classe o teto acompanha sozinho. O teto é TOTAL, não um por classe: dá pra ter dois
+// guerreiros dentro do orçamento.
+const MAX_PERSONAGENS_POR_CONTA = Object.keys(CLASSES).length;
+
+// Senha NUNCA em texto puro, nem em projeto de teste. `scrypt` é do core do Node (zero
+// dependência nova), com salt por usuário e comparação em tempo constante. Formato guardado
+// na coluna `jogadores.Senha VARCHAR(255)`: "scrypt$<salt_hex>$<hash_hex>".
+const SCRYPT_KEYLEN = 64;
+function hashSenha(senha) {
+    const salt = crypto.randomBytes(16).toString('hex');
+    const hash = crypto.scryptSync(senha, salt, SCRYPT_KEYLEN).toString('hex');
+    return `scrypt$${salt}$${hash}`;
+}
+
+function verificarSenha(senha, armazenado) {
+    // Conta antiga/semeada com senha em texto puro não autentica: formato desconhecido é
+    // recusado em vez de cair num caminho de comparação direta.
+    const partes = String(armazenado ?? '').split('$');
+    if (partes.length !== 3 || partes[0] !== 'scrypt') return false;
+    const [, salt, hashEsperado] = partes;
+    let candidato;
+    try {
+        candidato = crypto.scryptSync(senha, salt, SCRYPT_KEYLEN);
+    } catch {
+        return false;
+    }
+    const esperado = Buffer.from(hashEsperado, 'hex');
+    if (esperado.length !== candidato.length) return false;
+    return crypto.timingSafeEqual(candidato, esperado);
+}
+
+// Sessões autenticadas em memória. O projeto usa Modelo B (conexão curta e independente por
+// ação, ver networkConfig.js), então não existe socket persistente onde pendurar "quem está
+// logado" — e aceitar `jogadores_id` vindo do client deixaria qualquer um pedir os personagens
+// de outro. O login devolve um token opaco; as ações mandam o token e o servidor resolve o dono.
+// Limitação conhecida: o mapa é em memória, então um restart do servidor exige login de novo.
+// Fecha de vez quando o Modelo A (socket único / NetworkManager, roadmap §1.2) for implementado.
+const sessoesAuth = new Map(); // token -> { jogador_id, usuario }
+
+function criarSessaoAuth(jogador_id, usuario) {
+    const token = crypto.randomBytes(24).toString('hex');
+    sessoesAuth.set(token, { jogador_id, usuario });
+    return token;
+}
+
+function resolverSessaoAuth(token) {
+    if (typeof token !== 'string') return null;
+    return sessoesAuth.get(token) ?? null;
+}
+// Nível de nascimento. É 1, não 0: a fórmula de atributos usa `nivel - 1` como quantidade de
+// buffs, então nível 0 geraria -1 buff e um personagem MAIS FRACO que o molde da classe
+// (guerreiro nasceria 90/20/3 em vez de 100/25/5). Além disso `table_nivel` tem nível 1 = 0 XP,
+// então `concederXP` promoveria pra 1 no primeiro golpe. "Base/zerado" neste sistema é o 1.
+const NIVEL_INICIAL = 1;
+// Ponto de nascimento: centro do mapa normal. O default do schema (100,100) fica encostado
+// no canto e em cima de um ponto fixo de spawn de inimigo (ENEMY_SPAWN_POINTS).
+const SPAWN_INICIAL = { x: 1000, y: 1000 };
+// Regras de nome (decisão do dono do projeto): 3 a 22 caracteres, números e caracteres
+// especiais permitidos. O limite de 22 é bem abaixo do varchar(50) da coluna, então o corte
+// é de regra, não de schema. Validado no SERVIDOR porque o nome vem de campo de texto do
+// client — entrada não confiável, a checagem do client é só conveniência de UI.
+const NOME_MIN_CHARS = 3;
+const NOME_MAX_CHARS = 22;
+// (O teto de personagens é por CONTA — ver MAX_PERSONAGENS_POR_CONTA acima.)
 const XP_POR_DANO = 0.1; // XP = dano_efetivo × esta constante, pra TODO golpe (sem pico de abate — decisão do dono, comuns)
 
 // Zonas do Jogo e Limites Autoritários (Sub-passo A, Peça 2)
@@ -33,6 +117,51 @@ const GAME_ZONES = {
     'mapa_normal': { minX: 0, maxX: 2000, minY: 0, maxY: 2000 },
     'arena_boss':  { minX: 4000, maxX: 6000, minY: 4000, maxY: 6000 }
 };
+
+// Guardas autoritárias do golpe (ver golpeAutorizado). Valores de calibração, não contrato:
+// ATTACK_MAX_RANGE tem folga sobre o alcance real do client (collider ~40px, ataque manual
+// 70px em ExploracaoCombate.js) pra absorver latência e o lerp de posição do inimigo;
+// ATTACK_COOLDOWN_MS fica ABAIXO dos 500ms do cooldown local do client, senão o servidor
+// recusaria golpe legítimo por jitter de rede. Toda recusa é logada pra permitir calibrar
+// em campo sem adivinhar.
+const ATTACK_MAX_RANGE = 140;
+const ATTACK_COOLDOWN_MS = 400;
+
+// Teto do vx/vy que um jogador pode REPORTAR (o client anda a 300px/s por eixo). Não é
+// trava de movimento — é só pra um valor absurdo não poluir a lógica de animação dos
+// outros clients, que leem esses campos do state_update. Ver player_move.
+const MAX_REPORTED_SPEED = 600;
+
+// Decide se o golpe que o client pediu pode acontecer. Até aqui o client era a ÚNICA
+// autoridade sobre QUANDO um golpe ocorre (o servidor só calculava QUANTO), e isso abria
+// três furos reais:
+//  (a) zona — um `attack_enemy` cru com enemyId: 'boss_principal' matava o boss de dentro
+//      do mapa normal, furando o nível mínimo do portal (PORTAL_BOSS_MIN_LEVEL) e o
+//      congelamento de equipamento da arena (Sub-passo C3);
+//  (b) alcance — nada amarrava o golpe à proximidade; dava pra bater em qualquer inimigo
+//      do mapa de qualquer lugar;
+//  (c) cadência — o cooldown de 500ms vive no client (ExploracaoCombate.js), então um
+//      client em loop matava qualquer inimigo instantaneamente.
+// Função pura sobre player/enemy (não toca gameState) — mora aqui com as outras regras,
+// fora do handler, e muta só o carimbo de cadência do próprio jogador.
+function golpeAutorizado(player, enemy) {
+    if (enemy.zona !== player.zona) {
+        console.log(`[attack_enemy] Recusado (zona) — ${player.id} em ${player.zona} tentou atingir ${enemy.id} em ${enemy.zona}.`);
+        return false;
+    }
+
+    const distancia = Math.hypot(player.x - enemy.x, player.y - enemy.y);
+    if (distancia > ATTACK_MAX_RANGE) {
+        console.log(`[attack_enemy] Recusado (alcance) — ${player.id} a ${distancia.toFixed(0)}px de ${enemy.id} (máx ${ATTACK_MAX_RANGE}px).`);
+        return false;
+    }
+
+    const agora = Date.now();
+    if (player.ultimoAtaqueEm && agora - player.ultimoAtaqueEm < ATTACK_COOLDOWN_MS) return false;
+    player.ultimoAtaqueEm = agora;
+
+    return true;
+}
 
 // Deriva os atributos efetivos (hp_max/dano_base/defesa_base) a partir do molde da classe + buff de nível.
 // Usado tanto no carregamento (join) quanto na subida de nível.
@@ -397,7 +526,12 @@ function spawnEnemy(x, y, vx, vy, tipo) {
         dano_base: tipo.ataque, defesa_base: tipo.defesa,
         nome: tipo.nome, xp_multiplicador: tipo.xp_multiplicador,
         is_boss: tipo.is_boss,
-        mob_id: tipo.mob_id
+        mob_id: tipo.mob_id,
+        // Zona do inimigo: antes não existia e a zona do boss era inferida por is_boss/
+        // coordenada. Agora é explícita, porque `golpeAutorizado` compara zona de jogador
+        // com zona de inimigo (os comuns vivem só no mapa normal — o quique do tick loop
+        // os mantém dentro de 0..2000).
+        zona: 'mapa_normal'
     };
     return gameState.enemies[id];
 }
@@ -468,6 +602,7 @@ function spawnBoss() {
         xp_multiplicador: tipoBoss.xp_multiplicador,
         is_boss: true,
         mob_id: tipoBoss.mob_id,
+        zona: 'arena_boss', // ver comentário de `zona` em spawnEnemy
         damageHistory: {}
     };
     console.log(`[BOSS] ${tipoBoss.nome} spawnado na arena em (${gameState.enemies[id].x}, ${gameState.enemies[id].y}) com HP ${tipoBoss.vida}`);
@@ -495,30 +630,217 @@ wss.on('connection', (ws) => {
         try {
             const data = JSON.parse(message);
 
-            // Seleção de personagem: pool compartilhado sem dono (sem login — ver roadmap_game.md §1.1).
-            // Funciona sem join prévio; conexão de listagem é curta e independente (Modelo B).
+            // CADASTRO DE CONTA. Usuário é a identidade absoluta do jogador; `jogadores.Nome`
+            // tem UNIQUE, então a colisão é barrada pelo banco (ER_DUP_ENTRY) e não por um
+            // SELECT prévio — sem janela de corrida entre checar e inserir.
+            if (data.type === 'register') {
+                const usuario = String(data.usuario ?? '')
+                    // eslint-disable-next-line no-control-regex
+                    .replace(/[\u0000-\u001F\u007F]/g, '').replace(/\s+/g, ' ').trim();
+                const senha = String(data.senha ?? '');
+
+                if (usuario.length < USUARIO_MIN_CHARS || usuario.length > USUARIO_MAX_CHARS) {
+                    ws.send(JSON.stringify({ type: 'register_failed', message: `O usuário precisa ter de ${USUARIO_MIN_CHARS} a ${USUARIO_MAX_CHARS} caracteres.` }));
+                    return;
+                }
+                if (senha.length < SENHA_MIN_CHARS || senha.length > SENHA_MAX_CHARS) {
+                    ws.send(JSON.stringify({ type: 'register_failed', message: `A senha precisa ter de ${SENHA_MIN_CHARS} a ${SENHA_MAX_CHARS} caracteres.` }));
+                    return;
+                }
+
+                try {
+                    // `email` é NOT NULL no schema e não é usado pra autenticar — sintetiza a
+                    // partir do usuário em vez de alterar a coluna (menos invasivo que mexer
+                    // no schema da equipe por um campo que o jogo não pede).
+                    const [resultado] = await pool.query(
+                        'INSERT INTO jogadores (Nome, email, Senha, roles, is_active) VALUES (?, ?, ?, ?, TRUE)',
+                        [usuario, `${usuario.toLocaleLowerCase('pt-BR').replace(/\s+/g, '_')}@local`, hashSenha(senha), 'user']
+                    );
+                    console.log(`[register] Conta criada: ${usuario} (jogadores.id=${resultado.insertId}).`);
+                    ws.send(JSON.stringify({ type: 'register_ok', usuario }));
+                } catch (dbErr) {
+                    if (dbErr.code === 'ER_DUP_ENTRY') {
+                        ws.send(JSON.stringify({ type: 'register_failed', message: 'Esse usuário já existe.' }));
+                        return;
+                    }
+                    console.error('[register] Erro ao criar conta:', dbErr);
+                    ws.send(JSON.stringify({ type: 'register_failed', message: 'Erro ao criar a conta.' }));
+                }
+                return;
+            }
+
+            // LOGIN. Devolve um token opaco (ver sessoesAuth) que as ações seguintes usam para
+            // provar identidade. A mensagem de falha é a MESMA para usuário inexistente e senha
+            // errada, de propósito: não confirma quais contas existem.
+            if (data.type === 'login') {
+                const usuario = String(data.usuario ?? '').trim();
+                const senha = String(data.senha ?? '');
+                const recusa = { type: 'login_failed', message: 'Usuário ou senha incorretos.' };
+
+                try {
+                    const [rows] = await pool.query(
+                        'SELECT id, Nome, Senha, is_active FROM jogadores WHERE Nome = ?', [usuario]
+                    );
+                    if (rows.length === 0 || !verificarSenha(senha, rows[0].Senha)) {
+                        console.log(`[login] Recusado para "${usuario}".`);
+                        ws.send(JSON.stringify(recusa));
+                        return;
+                    }
+                    if (!rows[0].is_active) {
+                        ws.send(JSON.stringify({ type: 'login_failed', message: 'Conta desativada.' }));
+                        return;
+                    }
+
+                    const token = criarSessaoAuth(rows[0].id, rows[0].Nome);
+                    console.log(`[login] ${rows[0].Nome} (jogadores.id=${rows[0].id}) autenticado.`);
+                    ws.send(JSON.stringify({
+                        type: 'login_ok',
+                        token,
+                        usuario: rows[0].Nome,
+                        max_personagens: MAX_PERSONAGENS_POR_CONTA
+                    }));
+                } catch (dbErr) {
+                    console.error('[login] Erro ao autenticar:', dbErr);
+                    ws.send(JSON.stringify({ type: 'login_failed', message: 'Erro ao autenticar.' }));
+                }
+                return;
+            }
+
+            // Listagem de personagens: só os DA CONTA autenticada. O token resolve o dono no
+            // servidor — se viesse `jogadores_id` do client, qualquer um pediria a lista de outro.
             if (data.type === 'list_characters') {
+                const sessao = resolverSessaoAuth(data.token);
+                if (!sessao) {
+                    ws.send(JSON.stringify({ type: 'auth_required', message: 'Sessão expirada. Faça login novamente.' }));
+                    return;
+                }
+
                 let rows;
                 try {
-                    [rows] = await pool.query('SELECT id, nome, classe, nivel FROM personagens');
+                    [rows] = await pool.query(
+                        'SELECT id, nome, classe, nivel FROM personagens WHERE jogadores_id = ? ORDER BY id',
+                        [sessao.jogador_id]
+                    );
                 } catch (dbErr) {
                     console.error('[list_characters] Erro ao consultar personagens:', dbErr);
                     ws.send(JSON.stringify({ type: 'character_list', personagens: [] }));
                     return;
                 }
-                const personagens = rows.map(row => ({
-                    id: row.id,
-                    nome: row.nome,
-                    classe: row.classe,
-                    nivel: row.nivel,
-                    em_uso: activeSessions.has(String(row.id))
+                // Personagem em sessão ativa é OMITIDO da lista, não marcado como "em uso":
+                // quem está ocupado não está disponível, e o jogador nunca precisa de um
+                // estado bloqueado na tela — sempre existe o caminho de criar um novo
+                // (create_character). Decisão do dono do projeto.
+                const personagens = rows
+                    .filter(row => !activeSessions.has(String(row.id)))
+                    .map(row => ({
+                        id: row.id,
+                        nome: row.nome,
+                        classe: row.classe,
+                        nivel: row.nivel
+                    }));
+                // `classes` acompanha a lista para o client montar os botões de criação sem
+                // manter uma segunda cópia dos nomes de classe (CLASSES aqui é a fonte única).
+                ws.send(JSON.stringify({
+                    type: 'character_list',
+                    personagens,
+                    classes: Object.keys(CLASSES),
+                    usuario: sessao.usuario,
+                    max_personagens: MAX_PERSONAGENS_POR_CONTA
                 }));
-                ws.send(JSON.stringify({ type: 'character_list', personagens }));
+                return;
+            }
+
+            // Criação de personagem: nasce BASE (nível 1, XP 0, sem inventário) na classe
+            // escolhida. Funciona sem join prévio, igual ao list_characters (Modelo B —
+            // conexão curta e independente). É o que destrava co-op real: dois jogadores que
+            // querem a mesma classe criam cada um o seu personagem, em vez de disputar a
+            // única linha daquela classe.
+            if (data.type === 'create_character') {
+                const sessao = resolverSessaoAuth(data.token);
+                if (!sessao) {
+                    ws.send(JSON.stringify({ type: 'auth_required', message: 'Sessão expirada. Faça login novamente.' }));
+                    return;
+                }
+
+                const classe = String(data.classe ?? '').toLocaleLowerCase('pt-BR');
+                const molde = CLASSES[classe];
+                if (!molde) {
+                    ws.send(JSON.stringify({ type: 'character_create_failed', message: 'Classe inválida.' }));
+                    return;
+                }
+
+                // Nome: entrada não confiável. Normaliza aqui (autoridade), não no client.
+                // Remove caracteres de controle, colapsa espaços e aparra as pontas; o que
+                // sobra é medido contra o mínimo/máximo. Números e caracteres especiais são
+                // permitidos de propósito, então NÃO há lista branca de caracteres.
+                const nome = String(data.nome ?? '')
+                    // eslint-disable-next-line no-control-regex
+                    .replace(/[\u0000-\u001F\u007F]/g, '')
+                    .replace(/\s+/g, ' ')
+                    .trim();
+                if (nome.length < NOME_MIN_CHARS || nome.length > NOME_MAX_CHARS) {
+                    ws.send(JSON.stringify({
+                        type: 'character_create_failed',
+                        message: `O nome precisa ter de ${NOME_MIN_CHARS} a ${NOME_MAX_CHARS} caracteres.`
+                    }));
+                    return;
+                }
+
+                try {
+                    // Teto POR CONTA (não global). Conta só os personagens do dono autenticado.
+                    const [[{ total }]] = await pool.query(
+                        'SELECT COUNT(*) AS total FROM personagens WHERE jogadores_id = ?',
+                        [sessao.jogador_id]
+                    );
+                    if (total >= MAX_PERSONAGENS_POR_CONTA) {
+                        ws.send(JSON.stringify({
+                            type: 'character_create_failed',
+                            message: `Limite de ${MAX_PERSONAGENS_POR_CONTA} personagens por conta atingido.`
+                        }));
+                        return;
+                    }
+
+                    // hp_max/dano_base/defesa_base são as colunas legadas do schema (NOT NULL
+                    // sem default, achado A20): preenchidas aqui só pra satisfazer o schema.
+                    // O servidor NUNCA as lê — atributo efetivo é sempre recalculado por
+                    // recalcularAtributosEfetivos a partir de classe+nível+itens equipados.
+                    const [resultado] = await pool.query(
+                        `INSERT INTO personagens
+                           (jogadores_id, nome, classe, nivel, experiencia, hp_atual, hp_max, dano_base, defesa_base, posicao_x, posicao_y)
+                         VALUES (?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?)`,
+                        [
+                            sessao.jogador_id, nome, classe, NIVEL_INICIAL,
+                            molde.hp_max, molde.hp_max, molde.dano_base, molde.defesa_base,
+                            SPAWN_INICIAL.x, SPAWN_INICIAL.y
+                        ]
+                    );
+
+                    console.log(`[create_character] Criado personagem ${resultado.insertId} (${nome}, ${classe}, nível ${NIVEL_INICIAL}).`);
+                    ws.send(JSON.stringify({
+                        type: 'character_created',
+                        id: resultado.insertId,
+                        nome,
+                        classe,
+                        nivel: NIVEL_INICIAL
+                    }));
+                } catch (dbErr) {
+                    console.error('[create_character] Erro ao criar personagem:', dbErr);
+                    ws.send(JSON.stringify({ type: 'character_create_failed', message: 'Erro ao criar personagem no banco.' }));
+                }
                 return;
             }
 
             if (data.type === 'join') {
                 const requestedId = String(data.personagem_id);
+
+                // Autenticação ANTES da reserva de sessão: pedido sem token válido não deve nem
+                // consumir a trava de `activeSessions`.
+                const sessaoAuth = resolverSessaoAuth(data.token);
+                if (!sessaoAuth) {
+                    console.log(`[join] Recusado — sem sessão autenticada para personagem ${requestedId}.`);
+                    ws.close(4001, 'Sessão expirada. Faça login novamente.');
+                    return;
+                }
 
                 if (activeSessions.has(requestedId)) {
                     console.log(`[join] Recusado — personagem_id ${requestedId} já está em sessão ativa.`);
@@ -526,25 +848,52 @@ wss.on('connection', (ws) => {
                     return;
                 }
 
+                // Reserva SÍNCRONA da sessão: o `has` acima e este `add` precisam acontecer
+                // no MESMO turno do event loop. Antes o `add` só vinha depois das queries de
+                // personagem e inventário — dois joins simultâneos do mesmo personagem
+                // passavam os dois pelo `has` enquanto as queries estavam em voo, criando
+                // duas sessões para o mesmo id (auditoria, achado A01).
+                activeSessions.add(requestedId);
+
+                // Risco inverso da reserva antecipada: se uma query falhar DEPOIS do `add`,
+                // o personagem fica preso como "em uso" até o servidor reiniciar — pior que
+                // a corrida original. Todo caminho de recusa devolve a reserva aqui, em um
+                // único lugar, em vez de repetir o `delete` em cada `return`.
+                const recusarJoin = (motivoSocket) => {
+                    activeSessions.delete(requestedId);
+                    ws.close(4000, motivoSocket);
+                };
+
                 let rows;
                 try {
                     [rows] = await pool.query('SELECT * FROM personagens WHERE id = ?', [requestedId]);
                 } catch (dbErr) {
                     console.error('[join] Erro ao consultar personagem:', dbErr);
-                    ws.close(4000, 'Erro ao carregar personagem');
+                    recusarJoin('Erro ao carregar personagem');
                     return;
                 }
 
                 if (rows.length === 0) {
                     console.log(`[join] Recusado — personagem_id ${requestedId} não encontrado.`);
-                    ws.close(4000, 'Personagem não encontrado');
+                    recusarJoin('Personagem não encontrado');
                     return;
                 }
 
                 const row = rows[0];
+
+                // POSSE: o personagem tem que ser da conta autenticada. Sem isto, bastava
+                // conhecer/adivinhar um `personagem_id` pra entrar com o personagem de outro
+                // jogador — é a "janela de roubo de personagem" que o roadmap §7.3 registrava
+                // como aberta enquanto não houvesse login.
+                if (row.jogadores_id !== sessaoAuth.jogador_id) {
+                    console.log(`[join] Recusado — personagem ${requestedId} não pertence a ${sessaoAuth.usuario}.`);
+                    recusarJoin('Este personagem não pertence à sua conta');
+                    return;
+                }
+
                 if (!CLASSES[row.classe]) {
                     console.error(`[join] Classe desconhecida para personagem ${requestedId}: ${row.classe}`);
-                    ws.close(4000, 'Classe de personagem inválida');
+                    recusarJoin('Classe de personagem inválida');
                     return;
                 }
 
@@ -561,12 +910,14 @@ wss.on('connection', (ws) => {
                     );
                 } catch (dbErr) {
                     console.error('[join] Erro ao consultar inventário:', dbErr);
-                    ws.close(4000, 'Erro ao carregar inventário');
+                    recusarJoin('Erro ao carregar inventário');
                     return;
                 }
 
+                // A reserva em activeSessions já foi feita de forma síncrona lá acima; daqui
+                // pra frente a sessão é do socket, e quem a libera é liberarPersonagem()
+                // (morte) ou o ws.on('close').
                 personagemId = requestedId;
-                activeSessions.add(personagemId);
 
                 // Retorna ao centro se a posição salva pertence à arena ou ao antigo mapa ampliado.
                 const boundsNormal = GAME_ZONES.mapa_normal;
@@ -639,12 +990,30 @@ wss.on('connection', (ws) => {
             if (data.type === 'player_move') {
                 if (player.inventarioAberto) return; // Estático enquanto o inventário está aberto
 
+                // Validação de TIPO antes da de fronteira (auditoria, achado A14): o clamp
+                // sozinho não protege de lixo. `Math.min(undefined, 2000)` é NaN e
+                // `Math.max(0, NaN)` segue NaN — a posição NaN entrava no gameState, ia pro
+                // broadcast de 20Hz e chegava no snapshot periódico, que gravava NaN em
+                // posicao_x/posicao_y. Mensagem malformada agora é descartada inteira.
+                const x = Number(data.x);
+                const y = Number(data.y);
+                const vx = Number(data.vx);
+                const vy = Number(data.vy);
+                if (!Number.isFinite(x) || !Number.isFinite(y) ||
+                    !Number.isFinite(vx) || !Number.isFinite(vy)) return;
+
                 // Validação de fronteira autoritária
                 const bounds = GAME_ZONES[player.zona] || GAME_ZONES['mapa_normal'];
-                player.x = Math.max(bounds.minX, Math.min(data.x, bounds.maxX));
-                player.y = Math.max(bounds.minY, Math.min(data.y, bounds.maxY));
+                player.x = Math.max(bounds.minX, Math.min(x, bounds.maxX));
+                player.y = Math.max(bounds.minY, Math.min(y, bounds.maxY));
 
-                player.vx = data.vx; player.vy = data.vy;
+                // vx/vy são puramente informativos (o servidor não integra velocidade de
+                // jogador — o client é autoritativo sobre a própria posição dentro do clamp
+                // acima; validação de teletransporte segue fora de escopo, roadmap §7.3).
+                // O clamp existe só pra um valor absurdo não poluir a lógica de animação
+                // dos OUTROS clients, que lê esses campos do state_update.
+                player.vx = Math.max(-MAX_REPORTED_SPEED, Math.min(vx, MAX_REPORTED_SPEED));
+                player.vy = Math.max(-MAX_REPORTED_SPEED, Math.min(vy, MAX_REPORTED_SPEED));
             }
             // AÇÃO: Abrir/fechar o inventário — enquanto aberto, o jogador fica estático e imune
             // (ver guardas em player_move e attack_enemy). Sem timer: dura até o próprio
@@ -775,6 +1144,10 @@ wss.on('connection', (ws) => {
             // AÇÃO: Combate (Encostou no Inimigo)
             else if (data.type === 'attack_enemy') {
                 const enemy = gameState.enemies[data.enemyId];
+                // Guardas autoritárias de zona/alcance/cadência (ver golpeAutorizado). Fica
+                // atrás da checagem de inventário aberto de propósito: com o menu aberto o
+                // golpe nem acontece, então não deve consumir o cooldown do jogador.
+                if (enemy && !player.inventarioAberto && !golpeAutorizado(player, enemy)) return;
                 // Inventário aberto (Passo 1): fora de combate por completo — pula o toque inteiro,
                 // nem o jogador nem o inimigo tomam dano. Sem isso, o inimigo ainda tomava dano
                 // (e podia morrer sozinho batendo no jogador imune) mesmo com o menu aberto.

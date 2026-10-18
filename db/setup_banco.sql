@@ -23,13 +23,21 @@ USE jogo_pi;
 -- 1. Tabelas Base (Sem Dependências)
 CREATE TABLE jogadores (
     id INT PRIMARY KEY AUTO_INCREMENT,
+    -- `Nome` é o USUÁRIO de login (identidade absoluta do jogador), por isso ganhou UNIQUE:
+    -- sem isso nada impediria duas contas "andrei" e o login ficaria ambíguo. A colisão passa
+    -- a ser barrada pelo banco (ER_DUP_ENTRY no handler `register`), não por um SELECT prévio
+    -- — assim não há janela de corrida entre checar e inserir.
     Nome VARCHAR(100) NOT NULL,
     email VARCHAR(255) NOT NULL,
+    -- `Senha` guarda HASH, nunca texto puro: formato "scrypt$<salt_hex>$<hash_hex>", gerado
+    -- por crypto.scryptSync (core do Node, sem dependência nova), com salt por usuário. Os
+    -- 255 caracteres acomodam isso com folga. Ver hashSenha/verificarSenha em server.js.
     Senha VARCHAR(255) NOT NULL,
     roles VARCHAR(255) NOT NULL COMMENT 'sys_admin | admin | user',
     is_active BOOLEAN DEFAULT TRUE,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    current_map_id INT
+    current_map_id INT,
+    CONSTRAINT uq_jogadores_nome UNIQUE (Nome)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE Itens (
@@ -296,132 +304,45 @@ UNION ALL SELECT id, 2, 1, 1, 0.60 FROM mobs WHERE nome_inimigo = 'Forte'
 UNION ALL SELECT id, 1, 1, 1, 0.80 FROM mobs WHERE nome_inimigo = 'Elite'
 UNION ALL SELECT id, 2, 1, 1, 0.80 FROM mobs WHERE nome_inimigo = 'Elite';
 
--- jogadores: 1 jogador de teste
-INSERT INTO jogadores (Nome, email, Senha, roles, is_active) VALUES
-('Jogador Teste', 'teste@jogo-pi.local', 'senha_teste_123', 'user', TRUE);
+-- jogadores: NENHUM seed, de propósito.
+--
+-- O usuário é a identidade absoluta do jogador (decisão do dono do projeto) e toda conta nasce
+-- pela tela de login, com usuário e senha digitados — mesma regra dos personagens. O seed
+-- anterior ('Jogador Teste') guardava senha em TEXTO PURO e era uma conta que ninguém escolheu
+-- existir; saiu pelos dois motivos.
+--
+-- O banco nasce com ZERO contas e ZERO personagens: cadastre-se na tela e crie seus personagens.
 
--- personagens: os 5 de teste, nível 1, XP 0, atributos-base conforme
--- CLASSES em server.js (linhas 18-24). hp_atual = hp_max (HP cheio).
-INSERT INTO personagens (jogadores_id, nome, classe, nivel, experiencia, hp_atual, hp_max, dano_base, defesa_base) VALUES
-((SELECT id FROM jogadores WHERE email = 'teste@jogo-pi.local'), 'Guerreiro Teste', 'guerreiro', 1, 0, 100, 100, 25, 5),
-((SELECT id FROM jogadores WHERE email = 'teste@jogo-pi.local'), 'Mago Teste',      'mago',      1, 0, 60,  60,  40, 3),
-((SELECT id FROM jogadores WHERE email = 'teste@jogo-pi.local'), 'Arqueiro Teste',  'arqueiro',  1, 0, 70,  70,  35, 3),
-((SELECT id FROM jogadores WHERE email = 'teste@jogo-pi.local'), 'Suporte Teste',   'suporte',   1, 0, 80,  80,  20, 4),
-((SELECT id FROM jogadores WHERE email = 'teste@jogo-pi.local'), 'Tanque Teste',    'tanque',    1, 0, 150, 150, 15, 8);
+-- personagens / inventario: NENHUM seed, de propósito.
+--
+-- Decisão do dono do projeto: todo personagem nasce pela tela de seleção, com nome digitado
+-- pelo jogador — é o nome que determina quem é quem. Semear personagens prontos criava
+-- identidades anônimas ("Guerreiro Teste") que ninguém escolheu, e um deles não precisaria de
+-- nome enquanto todos os outros precisariam.
+--
+-- O banco nasce com ZERO personagens. A tela de seleção mostra só as 5 classes para criar
+-- (handler `create_character` em server.js), e o personagem criado é base: nível 1, XP 0,
+-- SEM inventário, no centro do mapa normal. Equipamento passa a vir de loot (`mob_drops`),
+-- não de seed — o catálogo `Itens` e os drops acima continuam populados.
+--
+-- O que NÃO pode sair daqui: `jogadores` (FK obrigatória de personagens), `Itens`, `mobs`,
+-- `mob_drops` e `table_nivel` — o servidor carrega os quatro últimos em memória no boot e se
+-- recusa a abrir a porta sem eles.
 
-INSERT INTO inventario (personagem_id, item_id, quantidade, equipado, slot_index) VALUES
-(
-    (SELECT id FROM personagens WHERE nome = 'Guerreiro Teste'),
-    (SELECT id FROM Itens WHERE nome = 'espada'), 1, TRUE, 0
-),
-(
-    (SELECT id FROM personagens WHERE nome = 'Guerreiro Teste'),
-    (SELECT id FROM Itens WHERE nome = 'capaceteGuerreiro'), 1, TRUE, 16
-),
-(
-    (SELECT id FROM personagens WHERE nome = 'Guerreiro Teste'),
-    (SELECT id FROM Itens WHERE nome = 'peitoralGuerreiro'), 1, TRUE, 15
-),
-(
-    (SELECT id FROM personagens WHERE nome = 'Guerreiro Teste'),
-    (SELECT id FROM Itens WHERE nome = 'calçaGuerreiro'), 1, TRUE, 17
-),
-(
-    (SELECT id FROM personagens WHERE nome = 'Guerreiro Teste'),
-    (SELECT id FROM Itens WHERE nome = 'botasGuerreiro'), 1, TRUE, 18
-),
-(
-    (SELECT id FROM personagens WHERE nome = 'Mago Teste'),
-    (SELECT id FROM Itens WHERE nome = 'cajadoMago'), 1, TRUE, 0
-),
-(
-    (SELECT id FROM personagens WHERE nome = 'Mago Teste'),
-    (SELECT id FROM Itens WHERE nome = 'chapéuMago'), 1, TRUE, 16
-),
-(
-    (SELECT id FROM personagens WHERE nome = 'Mago Teste'),
-    (SELECT id FROM Itens WHERE nome = 'peitoralMago'), 1, TRUE, 15
-),
-(
-    (SELECT id FROM personagens WHERE nome = 'Mago Teste'),
-    (SELECT id FROM Itens WHERE nome = 'calçaMago'), 1, TRUE, 17
-),
-(
-    (SELECT id FROM personagens WHERE nome = 'Mago Teste'),
-    (SELECT id FROM Itens WHERE nome = 'botasMago'), 1, TRUE, 18
-),
-(
-    (SELECT id FROM personagens WHERE nome = 'Arqueiro Teste'),
-    (SELECT id FROM Itens WHERE nome = 'arco'), 1, TRUE, 0
-),
-(
-    (SELECT id FROM personagens WHERE nome = 'Arqueiro Teste'),
-    (SELECT id FROM Itens WHERE nome = 'flecha'), 1, FALSE, 1
-),
-(
-    (SELECT id FROM personagens WHERE nome = 'Arqueiro Teste'),
-    (SELECT id FROM Itens WHERE nome = 'peitoralAtirador'), 1, TRUE, 15
-),
-(
-    (SELECT id FROM personagens WHERE nome = 'Arqueiro Teste'),
-    (SELECT id FROM Itens WHERE nome = 'calçaAtirador'), 1, TRUE, 17
-),
-(
-    (SELECT id FROM personagens WHERE nome = 'Arqueiro Teste'),
-    (SELECT id FROM Itens WHERE nome = 'botasAtirador'), 1, TRUE, 18
-),
-(
-    (SELECT id FROM personagens WHERE nome = 'Suporte Teste'),
-    (SELECT id FROM Itens WHERE nome = 'cajadoSuporte'), 1, TRUE, 0
-),
-(
-    (SELECT id FROM personagens WHERE nome = 'Suporte Teste'),
-    (SELECT id FROM Itens WHERE nome = 'capuz'), 1, TRUE, 16
-),
-(
-    (SELECT id FROM personagens WHERE nome = 'Suporte Teste'),
-    (SELECT id FROM Itens WHERE nome = 'peitoralSuporte'), 1, TRUE, 15
-),
-(
-    (SELECT id FROM personagens WHERE nome = 'Suporte Teste'),
-    (SELECT id FROM Itens WHERE nome = 'calçaSuporte'), 1, TRUE, 17
-),
-(
-    (SELECT id FROM personagens WHERE nome = 'Suporte Teste'),
-    (SELECT id FROM Itens WHERE nome = 'botasSuporte'), 1, TRUE, 18
-),
-(
-    (SELECT id FROM personagens WHERE nome = 'Suporte Teste'),
-    (SELECT id FROM Itens WHERE nome = 'Anel'), 1, TRUE, 1
-),
-(
-    (SELECT id FROM personagens WHERE nome = 'Tanque Teste'),
-    (SELECT id FROM Itens WHERE nome = 'escudo_improvisado'), 1, TRUE, 0
-),
-(
-    (SELECT id FROM personagens WHERE nome = 'Tanque Teste'),
-    (SELECT id FROM Itens WHERE nome = 'marreta'), 1, TRUE, 1
-),
-(
-    (SELECT id FROM personagens WHERE nome = 'Tanque Teste'),
-    (SELECT id FROM Itens WHERE nome = 'capaceteTank'), 1, TRUE, 16
-),
-(
-    (SELECT id FROM personagens WHERE nome = 'Tanque Teste'),
-    (SELECT id FROM Itens WHERE nome = 'peitoralTank'), 1, TRUE, 15
-),
-(
-    (SELECT id FROM personagens WHERE nome = 'Tanque Teste'),
-    (SELECT id FROM Itens WHERE nome = 'calçaTank'), 1, TRUE, 17
-),
-(
-    (SELECT id FROM personagens WHERE nome = 'Tanque Teste'),
-    (SELECT id FROM Itens WHERE nome = 'botasTank'), 1, TRUE, 18
-);
-
-
-
-
+-- =====================================================================
+-- 3. PERMISSÃO DO USUÁRIO DA APLICAÇÃO
+--
+-- ⚠️ O GRANT abaixo FALHA com "ERROR 1410: You are not allowed to create a user with GRANT"
+-- se o usuário `rpg_app` ainda não existir — o MySQL 8 não cria usuário implicitamente via
+-- GRANT. As 14 tabelas são criadas normalmente antes disso, então o sintoma é um script que
+-- "quase" funcionou. Em máquina nova, crie o usuário ANTES de rodar este script:
+--
+--   CREATE USER IF NOT EXISTS 'rpg_app'@'localhost' IDENTIFIED BY 'SENHA';
+--
+-- A senha precisa satisfazer a política validate_password (MEDIUM: mín. 8 caracteres com
+-- maiúscula, minúscula, número e símbolo) e ser a mesma do DB_PASSWORD em server/.env.
+-- Procedimento completo em commands.md.
+-- =====================================================================
 
 GRANT ALL PRIVILEGES ON jogo_pi.* TO 'rpg_app'@'localhost';
 FLUSH PRIVILEGES;

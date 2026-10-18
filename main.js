@@ -1,6 +1,7 @@
 import { Boot } from './Boot.js';
 import { Preload } from './Preload.js';
 import { MainMenu } from './MainMenu.js';
+import { Login } from './Login.js';
 import { SelecaoPersonagem } from './SelecaoPersonagem.js';
 import { Loading } from './Loading.js';
 import { HubCentral } from './HubCentral.js';
@@ -20,7 +21,7 @@ const config = {
     physics: { default: 'arcade', arcade: { gravity: { y: 0 }, fixedStep: false } },
     // A ordem aqui não dita quem roda primeiro (o Phaser pega a primeira da lista),
     // mas cadastra todas no sistema FSM.
-    scene: [Boot, Preload, MainMenu, SelecaoPersonagem, Loading, HubCentral, ExploracaoCombate, UIScene]
+    scene: [Boot, Preload, MainMenu, Login, SelecaoPersonagem, Loading, HubCentral, ExploracaoCombate, UIScene]
 };
 
 const game = new Phaser.Game(config);
