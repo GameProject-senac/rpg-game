@@ -127,6 +127,18 @@ const GAME_ZONES = {
 const ATTACK_MAX_RANGE = 140;
 const ATTACK_COOLDOWN_MS = 400;
 
+// Alcance autoritário da COLETA (ver handler 'pickup_item'). Mesma lógica de folga do
+// ATTACK_MAX_RANGE: o overlap real no client acontece a ~40px (corpo do jogador 40x40 contra a
+// hitbox 40x40 do item, ver spawnItem em ExploracaoCombate.js), e o teto aqui fica acima disso
+// para absorver latência e o lerp de posição — sem permitir coleta do outro lado do mapa.
+const PICKUP_MAX_RANGE = 120;
+
+// Comandos de debug (hoje só 'debug_tp_boss') ficam atrás desta trava. O servidor é a autoridade
+// do jogo e não deve aceitar atalho de teste vindo de um client qualquer: sem isto, um
+// 'debug_tp_boss' cru levava QUALQUER personagem à arena do boss, furando o nível mínimo do
+// portal. Desligado por padrão; para teste de campo, DEBUG_COMMANDS=true no server/.env.
+const DEBUG_COMMANDS = String(process.env.DEBUG_COMMANDS ?? '').toLowerCase() === 'true';
+
 // Teto do vx/vy que um jogador pode REPORTAR (o client anda a 300px/s por eixo). Não é
 // trava de movimento — é só pra um valor absurdo não poluir a lógica de animação dos
 // outros clients, que leem esses campos do state_update. Ver player_move.
@@ -202,13 +214,38 @@ function recalcularAtributosEfetivos(player) {
     player.defesa_base = base.defesa_base + bonus.bonus_defesa;
 }
 
+// Categoria de equipamento do item, vinda da coluna `Itens.slot_categoria` (ver
+// db/setup_banco.sql). Item sem categoria cai em 'indefinido' DE PROPÓSITO: 'indefinido' é
+// exclusivo consigo mesmo, então esquecer de categorizar um item novo o deixa restritivo demais
+// (visível no teste e avisado no boot) em vez de reabrir o empilhamento de bônus em silêncio.
+const CATEGORIA_INDEFINIDA = 'indefinido';
+function categoriaDoItem(item) {
+    const categoria = String(item?.slot_categoria ?? '').trim().toLocaleLowerCase('pt-BR');
+    return categoria || CATEGORIA_INDEFINIDA;
+}
+
+// Slot dedicado de cada categoria de ARMADURA. Deriva da COLUNA, não do prefixo do nome: antes
+// esta função lia 'peitoral'/'capacete'/'calça'/'capuz' do próprio `nome`, então renomear um item
+// no banco quebrava o equipamento em silêncio. As categorias de armadura são finas justamente
+// para carregarem esta informação (peitoral/capacete/calca/botas, não um 'armadura' genérico).
+const SLOT_POR_CATEGORIA = { peitoral: 15, capacete: 16, calca: 17, botas: 18 };
+
 function slotEspecialDoItem(item) {
-    const nome = (item?.nome || '').toLocaleLowerCase('pt-BR');
-    if (nome.startsWith('peitoral')) return 15;
-    if (nome.startsWith('capacete') || nome.startsWith('chapéu') || nome === 'capuz') return 16;
-    if (nome.startsWith('calça')) return 17;
-    if (nome.startsWith('botas')) return 18;
-    return null;
+    return SLOT_POR_CATEGORIA[categoriaDoItem(item)] ?? null;
+}
+
+// Peças que precisam SAIR para `itemNovo` entrar: as da MESMA categoria que já estão equipadas.
+// É isto que implementa "equipamento NÃO empilha bônus; o bônus é sempre de UMA peça equipada"
+// (AGENTS.md §00) para arma, escudo, acessório e munição — categorias que não tinham limite
+// nenhum, porque só a armadura possuía slot dedicado. Medido antes da correção: dano 15 -> 25 ->
+// 35 com duas armas equipadas ao mesmo tempo, e duas linhas `equipado=1` no banco.
+// Armadura não passa por aqui: o slot dedicado (15..18) já garante uma peça por parte do corpo.
+function itensConflitantes(player, itemNovo) {
+    if (slotEspecialDoItem(itemNovo) !== null) return [];
+    const categoria = categoriaDoItem(itemNovo);
+    return player.inventario.filter(outro =>
+        outro.id !== itemNovo.id && outro.equipado && categoriaDoItem(outro) === categoria
+    );
 }
 
 function itemCompativelComSlot(item, slotIndex) {
@@ -269,9 +306,16 @@ async function carregarMobDrops() {
 // Catálogo de itens carregado no boot para o servidor consultar nomes sem ir ao banco a cada drop.
 const CATALOGO_ITENS = {};
 async function carregarCatalogoItens() {
-    const [rows] = await pool.query('SELECT id, nome, tipo, bonus_dano, bonus_defesa, bonus_hp FROM Itens');
+    const [rows] = await pool.query('SELECT id, nome, tipo, slot_categoria, bonus_dano, bonus_defesa, bonus_hp FROM Itens');
     for (const r of rows) {
         CATALOGO_ITENS[r.id] = r;
+    }
+    // Item sem `slot_categoria` cai em 'indefinido' (ver categoriaDoItem) e fica exclusivo com
+    // qualquer outro item sem categoria. Melhor gritar no boot do que descobrir em campo que uma
+    // peça nova deixou de equipar junto com outra sem motivo aparente.
+    const semCategoria = rows.filter(r => !r.slot_categoria).map(r => r.nome);
+    if (semCategoria.length > 0) {
+        console.warn(`[catalogo] ${semCategoria.length} item(ns) sem slot_categoria (cairão em '${CATEGORIA_INDEFINIDA}'): ${semCategoria.join(', ')}`);
     }
 }
 
@@ -356,6 +400,12 @@ const respawnPendente = new Set();
 function liberarPersonagem(player) {
     delete gameState.players[player.id];
     activeSessions.delete(player.id);
+    // O socket sai do mapa AQUI, junto com o resto da autoridade, porque este é o único ponto
+    // por onde um personagem é liberado — tanto na morte quanto no close. Antes a limpeza morava
+    // só no ws.on('close'), e no caminho da MORTE ela nunca era alcançada: `personagemId` já
+    // tinha virado null, então o close caía no ramo `else` e a entrada ficava órfã, apontando
+    // para um socket fechado (medido: players=0 e activeSessions=0, mas playerSockets=1).
+    playerSockets.delete(player.id);
     pool.query(
         'UPDATE personagens SET posicao_x = ?, posicao_y = ?, hp_atual = ?, nivel = ?, experiencia = ? WHERE id = ?',
         [player.x, player.y, player.hp_atual, player.nivel, player.experiencia, player.id]
@@ -831,6 +881,19 @@ wss.on('connection', (ws) => {
             }
 
             if (data.type === 'join') {
+                // UMA CONEXÃO = UM PERSONAGEM. Sem esta guarda, um segundo 'join' no mesmo socket
+                // sobrescrevia 'personagemId' e o primeiro personagem ficava preso para sempre: o
+                // ws.on('close') só libera o ÚLTIMO id, então o anterior continuava em
+                // 'activeSessions' (omitido da seleção e recusando todo join novo com o código
+                // 4000) e em 'gameState.players' (fantasma imóvel no broadcast de 20Hz) até o
+                // servidor reiniciar. O client legítimo manda 'join' uma única vez, no onopen — um
+                // segundo join é bug ou mensagem crua, então é ignorado SEM derrubar a sessão que
+                // já vale.
+                if (personagemId !== null) {
+                    console.log(`[join] Recusado — esta conexão já está em sessão com o personagem ${personagemId}.`);
+                    return;
+                }
+
                 const requestedId = String(data.personagem_id);
 
                 // Autenticação ANTES da reserva de sessão: pedido sem token válido não deve nem
@@ -901,7 +964,8 @@ wss.on('connection', (ws) => {
                 try {
                     [invRows] = await pool.query(
                         `SELECT inventario.id, inventario.item_id, inventario.slot_index, inventario.quantidade, inventario.equipado,
-                                Itens.nome, Itens.descricao, Itens.tipo, Itens.bonus_dano, Itens.bonus_defesa, Itens.bonus_hp
+                                Itens.nome, Itens.descricao, Itens.tipo, Itens.slot_categoria,
+                                Itens.bonus_dano, Itens.bonus_defesa, Itens.bonus_hp
                          FROM inventario
                          JOIN Itens ON Itens.id = inventario.item_id
                          WHERE inventario.personagem_id = ?
@@ -1040,11 +1104,27 @@ wss.on('connection', (ws) => {
                 if (querEquipar && slotEspecialDoItem(item) !== null &&
                     Number(item.slot_index) !== slotEspecialDoItem(item)) return;
 
+                // Peças da mesma categoria que vão sair para esta entrar (ver itensConflitantes).
+                const conflitos = querEquipar ? itensConflitantes(player, item) : [];
+
                 // Persiste ANTES de mudar o estado em memória (AGENTS.md/auditoria, achado A04):
                 // se o UPDATE falhar, a memória e o banco ficavam divergentes — o client via
                 // sucesso (bônus aplicado) mas o reconnect carregava o valor antigo do banco.
                 try {
-                    await pool.query('UPDATE inventario SET equipado = ? WHERE id = ?', [querEquipar, item.id]);
+                    if (conflitos.length > 0) {
+                        // UMA instrução resolve as duas pontas: liga o item pedido e desliga os
+                        // concorrentes. Sendo um único UPDATE, é atômico por si — não precisa de
+                        // transação, e não existe instante em que as duas peças fiquem equipadas.
+                        const idsAfetados = [item.id, ...conflitos.map(c => c.id)];
+                        await pool.query(
+                            `UPDATE inventario SET equipado = (id = ?)
+                              WHERE personagem_id = ? AND id IN (${idsAfetados.map(() => '?').join(',')})`,
+                            [item.id, personagemId, ...idsAfetados]
+                        );
+                        console.log(`[equip_item] ${personagemId}: ${item.nome} entra em '${categoriaDoItem(item)}' e desequipa ${conflitos.map(c => c.nome).join(', ')}.`);
+                    } else {
+                        await pool.query('UPDATE inventario SET equipado = ? WHERE id = ?', [querEquipar, item.id]);
+                    }
                 } catch (dbErr) {
                     console.error(`[${data.type}] Erro ao gravar equipado de ${item.id}:`, dbErr);
                     // Não aplica em memória nem recalcula — reenvia o estado real (inalterado)
@@ -1059,7 +1139,13 @@ wss.on('connection', (ws) => {
                 // atual — mutá-lo diretamente perderia a mudança (AGENTS.md/auditoria, achado A04).
                 const itemAtual = player.inventario.find(i => i.id === data.inventario_id);
                 if (itemAtual) itemAtual.equipado = querEquipar;
+                // Mesma rebusca por id para os concorrentes, pelo mesmo motivo acima.
+                for (const conflito of conflitos) {
+                    const concorrenteAtual = player.inventario.find(i => i.id === conflito.id);
+                    if (concorrenteAtual) concorrenteAtual.equipado = false;
+                }
                 recalcularAtributosEfetivos(player);
+
 
                 ws.send(JSON.stringify({ type: 'inventory_update', personagem_id: personagemId, itens: player.inventario }));
                 ws.send(JSON.stringify({
@@ -1277,6 +1363,9 @@ wss.on('connection', (ws) => {
                                     // Offset para o item não nascer perfeitamente escondido debaixo do player
                                     x: enemy.x + (Math.random() * 40 - 20),
                                     y: enemy.y + (Math.random() * 40 - 20),
+                                    // A zona acompanha o drop porque a coleta compara zona (ver
+                                    // 'pickup_item'): drop de boss nasce na arena, comum no mapa normal.
+                                    zona: enemy.zona,
                                     createdAt: Date.now()
                                 };
                                 gameState.itensNoChao[dropId] = novoItemNoChao;
@@ -1335,7 +1424,23 @@ wss.on('connection', (ws) => {
                 const itemNoChao = gameState.itensNoChao[dropId];
                 
                 // Se o item não existe mais (já foi coletado por outro ou expirou), ignora silenciosamente
-                if (!itemNoChao) return; 
+                if (!itemNoChao) return;
+
+                // GUARDA AUTORITÁRIA DE ZONA/ALCANCE. O 'pickup_item' era a única ação de mundo sem
+                // checagem de posição: um 'dropId' cru coletava qualquer item de qualquer ponto do
+                // mapa (confirmado em teste — coleta aceita a 1518px, enquanto o golpe era recusado
+                // a 1843px). É o mesmo furo que 'golpeAutorizado' fechou para o ataque, e aqui
+                // segue a mesma forma: a zona tem que bater e a distância tem que caber em
+                // PICKUP_MAX_RANGE. Toda recusa é logada, para permitir calibrar em campo.
+                if (itemNoChao.zona !== player.zona) {
+                    console.log(`[pickup_item] Recusado (zona) — ${player.id} em ${player.zona} tentou coletar ${dropId} em ${itemNoChao.zona}.`);
+                    return;
+                }
+                const distanciaDoItem = Math.hypot(player.x - itemNoChao.x, player.y - itemNoChao.y);
+                if (distanciaDoItem > PICKUP_MAX_RANGE) {
+                    console.log(`[pickup_item] Recusado (alcance) — ${player.id} a ${distanciaDoItem.toFixed(0)}px de ${dropId} (máx ${PICKUP_MAX_RANGE}px).`);
+                    return;
+                }
 
                 // Remove do chão imediatamente para evitar corrida de coleta multiplayer.
                 // O broadcast de remoção só acontece DEPOIS da persistência confirmar (ver try/catch
@@ -1370,7 +1475,8 @@ wss.on('connection', (ws) => {
                     // Recarrega o inventário em memória (usando o JOIN com Itens para popular nome/tipo/bônus corretamente)
                     const [invRows] = await pool.query(
                         `SELECT inventario.id, inventario.item_id, inventario.slot_index, inventario.quantidade, inventario.equipado,
-                                Itens.nome, Itens.descricao, Itens.tipo, Itens.bonus_dano, Itens.bonus_defesa, Itens.bonus_hp
+                                Itens.nome, Itens.descricao, Itens.tipo, Itens.slot_categoria,
+                                Itens.bonus_dano, Itens.bonus_defesa, Itens.bonus_hp
                          FROM inventario
                          JOIN Itens ON Itens.id = inventario.item_id
                          WHERE inventario.personagem_id = ?
@@ -1395,8 +1501,27 @@ wss.on('connection', (ws) => {
             }
             // AÇÃO: Comando de debug para teleportar para o Boss (Passo 3a)
             else if (data.type === 'debug_tp_boss') {
+                // Ferramenta de teste de campo, não funcionalidade de jogo: sem trava, era um
+                // atalho livre para a arena. Confirmado em teste: um personagem NÍVEL 1 entrou por
+                // aqui e tirou HP do boss, enquanto o portal recusava o MESMO personagem com
+                // "Nível insuficiente". Desligado por padrão (ver DEBUG_COMMANDS).
+                if (!DEBUG_COMMANDS) {
+                    console.log('[debug_tp_boss] Ignorado — comandos de debug desligados (DEBUG_COMMANDS).');
+                    return;
+                }
+
                 // Teleporta de/para a arena e transiciona a zona
                 const inArena = player.zona === 'arena_boss';
+
+                // Mesmo piso de nível do portal, INCLUSIVE com o debug ligado: o atalho pode pular
+                // a canalização de 4s (conveniência de teste), nunca a regra de acesso à arena.
+                // Sair da arena nunca é barrado — só a entrada.
+                if (!inArena && player.nivel < PORTAL_BOSS_MIN_LEVEL) {
+                    console.log(`[debug_tp_boss] Recusado — ${player.id} é nível ${player.nivel}, a arena exige ${PORTAL_BOSS_MIN_LEVEL}.`);
+                    sendPortalFeedback([player], 'Nível insuficiente para entrar na arena.');
+                    return;
+                }
+
                 const alvoX = inArena ? 1000 : 5000;
                 const alvoY = inArena ? 1000 : 5000;
 

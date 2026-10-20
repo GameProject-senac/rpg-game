@@ -61,6 +61,14 @@ CREATE TABLE Itens (
     -- servidor passa a ler os bônus DAQUI, não do ITENS hardcoded.
     -- ---------------------------------------------------------------
     tipo VARCHAR(30),
+    -- slot_categoria: a que tipo de equipamento o item pertence. Existe para o servidor impor
+    -- UMA peça equipada POR CATEGORIA (AGENTS.md: "equipamento NÃO empilha bônus") sem depender
+    -- do NOME do item. Antes só a armadura tinha slot dedicado e a regra era derivada de prefixo
+    -- de nome ('peitoral', 'calça'...), então arma/escudo/acessório não tinham limite nenhum: N
+    -- armas podiam ficar equipadas somando bônus (medido: dano 15 -> 25 -> 35 com duas armas), e
+    -- renomear um item no banco quebrava o equipamento em silêncio. Categoria é conteúdo que a
+    -- equipe calibra, por isso mora aqui e não no código (§07).
+    slot_categoria VARCHAR(20) COMMENT 'peitoral|capacete|calca|botas|arma|escudo|acessorio|municao',
     bonus_dano INT DEFAULT 0,
     bonus_defesa INT DEFAULT 0,
     bonus_hp INT DEFAULT 0
@@ -275,6 +283,33 @@ INSERT INTO Itens (nome, descricao, localizacao, chance, tipo, bonus_dano, bonus
 ('peitoralMago', 'Peitoral leve usado por magos.', NULL, 1.0, 'Equipamento', 0, 0, 0),
 ('peitoralSuporte', 'Peitoral resistente para funções de suporte.', NULL, 1.0, 'Equipamento', 0, 0, 0),
 ('peitoralTank', 'Peitoral pesado com foco em proteção.', NULL, 1.0, 'Equipamento', 0, 0, 0);
+
+-- Categoria de equipamento de cada item do catálogo acima (ver slot_categoria na CREATE TABLE).
+-- Agrupado por categoria em vez de coluna no INSERT para a leitura ficar óbvia: dá pra ver de
+-- relance o que é arma e o que é armadura. Item novo no catálogo PRECISA entrar aqui também —
+-- sem categoria ele cai no grupo 'indefinido' do servidor, que é exclusivo entre si por
+-- segurança (ver categoriaDoItem em server.js) e loga um aviso no boot.
+-- As quatro categorias de ARMADURA são finas de propósito (peitoral/capacete/calca/botas, não um
+-- 'armadura' genérico): é delas que o servidor deriva o slot dedicado 15/16/17/18, em vez de
+-- adivinhar pelo prefixo do nome. Ver SLOT_POR_CATEGORIA em server.js.
+UPDATE Itens SET slot_categoria = 'peitoral'
+ WHERE nome IN ('peitoralAtirador', 'peitoralGuerreiro', 'peitoralMago', 'peitoralSuporte', 'peitoralTank');
+UPDATE Itens SET slot_categoria = 'capacete'
+ WHERE nome IN ('capaceteGuerreiro', 'capaceteTank', 'capuz', 'chapéuMago');
+UPDATE Itens SET slot_categoria = 'calca'
+ WHERE nome IN ('calçaAtirador', 'calçaGuerreiro', 'calçaMago', 'calçaSuporte', 'calçaTank');
+UPDATE Itens SET slot_categoria = 'botas'
+ WHERE nome IN ('botasAtirador', 'botasGuerreiro', 'botasMago', 'botasSuporte', 'botasTank');
+UPDATE Itens SET slot_categoria = 'arma'
+ WHERE nome IN ('espada', 'arco', 'cajadoMago', 'cajadoSuporte', 'clava', 'lança', 'marreta');
+UPDATE Itens SET slot_categoria = 'escudo'
+ WHERE nome IN ('escudo', 'escudo_improvisado');
+UPDATE Itens SET slot_categoria = 'acessorio'
+ WHERE nome IN ('Anel');
+UPDATE Itens SET slot_categoria = 'municao'
+ WHERE nome IN ('flecha');
+
+
 
 -- mobs: 5 tipos de teste (Loot & Inimigos, Passo 1a + Passo 2a — valores
 -- provisórios do dono do projeto). 'Comum' é 50hp/15atk/2def, o baseline

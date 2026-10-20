@@ -409,25 +409,15 @@ export class ExploracaoCombate extends Phaser.Scene {
     handlePlayerJoined(data) {
         if (data.player.id === this.myId) return;
         // Causa B (Round 2): reconexão rápida do mesmo id mandava um segundo player_joined antes
-        // do player_left do anterior chegar — spawnRemotePlayer criava um sprite novo sem destruir
-        // o velho, que virava órfão (visível, nunca atualizado por state_update, nunca removido).
-        // Idempotente: se o id já existe, destrói o sprite/graphics velho antes de recriar.
-        if (this.otherPlayers.has(data.player.id)) {
-            const rp = this.otherPlayers.get(data.player.id);
-            rp.hpGraphics.destroy();
-            rp.sprite.destroy();
-            this.otherPlayers.delete(data.player.id);
-        }
+        // do player_left do anterior chegar, e o sprite velho virava órfão. A idempotência que
+        // resolvia isso aqui mudou de lugar: agora mora dentro do próprio spawnRemotePlayer, de
+        // onde cobre TODOS os caminhos de entrada — inclusive o handleWelcome, que chama o spawn
+        // direto e por isso ficava de fora desta guarda.
         this.spawnRemotePlayer(data.player);
     }
 
     handlePlayerLeft(data) {
-        if (this.otherPlayers.has(data.id)) {
-            const rp = this.otherPlayers.get(data.id);
-            rp.hpGraphics.destroy();
-            rp.sprite.destroy();
-            this.otherPlayers.delete(data.id);
-        }
+        this.destroyRemotePlayer(data.id);
     }
 
     // RESPAWN CONTÍNUO DE INIMIGOS (Causa C, Round 2): state_update não cria inimigo novo,
@@ -463,23 +453,14 @@ export class ExploracaoCombate extends Phaser.Scene {
 
     // EVENTOS DE MORTE
     handleEnemyDied(data) {
-        if (this.enemyData.has(data.enemyId)) {
-            const e = this.enemyData.get(data.enemyId);
-            e.hpGraphics.destroy();
-            e.nameText.destroy();
-            e.sprite.destroy();
-            this.enemyData.delete(data.enemyId);
-        }
+        this.destroyEnemy(data.enemyId);
     }
 
     handlePlayerDied(data) {
         if (data.playerId === this.myId) {
             this.scene.restart(); // Renasce (FSM trata o shutdown)
-        } else if (this.otherPlayers.has(data.playerId)) {
-            const rp = this.otherPlayers.get(data.playerId);
-            rp.hpGraphics.destroy();
-            rp.sprite.destroy();
-            this.otherPlayers.delete(data.playerId);
+        } else {
+            this.destroyRemotePlayer(data.playerId);
         }
     }
 
@@ -584,11 +565,7 @@ export class ExploracaoCombate extends Phaser.Scene {
     }
 
     handleItemRemoved(data) {
-        if (this.itensData.has(data.dropId)) {
-            const itemObj = this.itensData.get(data.dropId);
-            itemObj.sprite.destroy();
-            this.itensData.delete(data.dropId);
-        }
+        this.destroyItem(data.dropId);
     }
 
     handleForceTeleport(data) {
@@ -635,7 +612,46 @@ export class ExploracaoCombate extends Phaser.Scene {
         );
     }
 
+    // ─────────────────────────────────────────────────────────────────
+    // DESTRUIÇÃO DE ENTIDADES — fonte única da limpeza visual de cada tipo.
+    //
+    // Existem porque toda entidade pode chegar DUAS vezes: o servidor faz broadcast para toda
+    // conexão aberta, inclusive uma que ainda não mandou `join`, então `enemy_spawned`,
+    // `item_dropped` e `player_joined` chegam ANTES do `welcome` — e o `welcome` traz as MESMAS
+    // entidades dentro de `state` (medido em campo: 4 entidades entregues em duplicidade numa
+    // única entrada). Como os `spawn*` abaixo fazem `Map.set`, a segunda entrega sobrescrevia a
+    // referência e deixava sprite + hpGraphics + nameText órfãos: visíveis, nunca interpolados
+    // por `state_update` e nunca destruídos. Com a limpeza aqui, todo `spawn*` é idempotente.
+    // ─────────────────────────────────────────────────────────────────
+
+    destroyRemotePlayer(id) {
+        const rp = this.otherPlayers.get(id);
+        if (!rp) return;
+        rp.hpGraphics.destroy();
+        if (rp.sprite) rp.sprite.destroy();
+        this.otherPlayers.delete(id);
+    }
+
+    destroyEnemy(id) {
+        const e = this.enemyData.get(id);
+        if (!e) return;
+        e.hpGraphics.destroy();
+        e.nameText.destroy();
+        e.sprite.destroy();
+        this.enemyData.delete(id);
+    }
+
+    destroyItem(id) {
+        const item = this.itensData.get(id);
+        if (!item) return;
+        item.sprite.destroy();
+        this.itensData.delete(id);
+    }
+
     spawnRemotePlayer(state) {
+        // Idempotente: derruba o visual anterior deste id antes de criar o novo.
+        this.destroyRemotePlayer(state.id);
+
         let sprite;
         const classe = (state.classe || '').toLowerCase();
         const isWarrior = classe === 'guerreiro';
@@ -675,6 +691,10 @@ export class ExploracaoCombate extends Phaser.Scene {
     }
 
     spawnEnemy(state) {
+        // Idempotente (ver destroyEnemy): o mesmo inimigo chega por `enemy_spawned` e de novo
+        // dentro do `welcome.state.enemies` quando o evento precede o handshake.
+        this.destroyEnemy(state.id);
+
         const isBoss = Boolean(state.is_boss || state.nome === 'Boss');
         const config = ENEMY_VISUAL_CONFIG[state.nome];
         let sprite;
@@ -736,6 +756,10 @@ export class ExploracaoCombate extends Phaser.Scene {
 
     // Desenha o item no chão (Passo 5b)
     spawnItem(itemData) {
+        // Idempotente (ver destroyItem): o mesmo drop chega por `item_dropped` e de novo dentro
+        // do `welcome.state.itensNoChao` quando o evento precede o handshake.
+        this.destroyItem(itemData.id);
+
         console.log(`[CLIENT] Renderizando item ${itemData.nome} em ${itemData.x}, ${itemData.y}`);
         
         // Fallback visual: retângulo amarelo maior e mais visível

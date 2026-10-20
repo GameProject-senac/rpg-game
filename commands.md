@@ -98,6 +98,19 @@ só no servidor, funcionando no CLI) aponta pro lugar errado — ver AGENTS.md �
 node -e "require('dotenv').config({path:'server/.env'}); console.log(process.env.DB_PASSWORD.length)"
 ```
 
+### 6. Comandos de debug (opcional, só em máquina de desenvolvimento)
+
+O handler `debug_tp_boss` (tecla **T** na cena de combate, teleporte para a arena do boss) fica
+**desligado por padrão**. Para habilitar em teste de campo, adicione ao `server/.env`:
+
+```bash
+DEBUG_COMMANDS=true
+```
+
+Mesmo ligado, o teleporte respeita o nível mínimo da arena (`PORTAL_BOSS_MIN_LEVEL`) — ver
+AGENTS.md §08, "Guardas autoritárias de ação de mundo". Sem a variável, pressionar T não faz nada
+e o servidor loga `[debug_tp_boss] Ignorado`.
+
 ---
 
 ## Diagnóstico rápido
@@ -110,6 +123,9 @@ node -e "require('dotenv').config({path:'server/.env'}); console.log(process.env
 | `Access denied for user 'rpg_app'` (também pelo CLI) | `server/.env` ausente/senha errada, ou `GRANT` não aplicado (passos 3 e 5) |
 | `ERROR 1819 ... password does not satisfy the current policy` | política `validate_password` (MEDIUM): mín. 8 chars com maiúscula, minúscula, número e símbolo |
 | `ERROR 1410 ... not allowed to create a user with GRANT` na última linha do setup | o usuário `rpg_app` não existia — o MySQL 8 não cria usuário via `GRANT`. Rodar o passo 3 ANTES do passo 4 (as tabelas são criadas normalmente; só o `GRANT` final falha) |
+| `ERROR 1044 Access denied for user 'rpg_app' to database 'jogo_pi'` na última linha do setup | o script foi rodado com o usuário da aplicação em vez de `root`: `rpg_app` tem `ALL PRIVILEGES ON jogo_pi.*` mas não tem `GRANT OPTION`, então só as duas últimas linhas falham. As 14 tabelas e os seeds entram normalmente e o `GRANT` era redundante — rodar como `root` (passo 4) ou ignorar |
+| Cadastro aceita usuário repetido / login do 2º dá "Usuário ou senha incorretos" | falta o `UNIQUE uq_jogadores_nome` neste banco (schema antigo, anterior à constraint). O `login` resolve sempre a linha de menor id, então o 2º cadastro cria uma conta inacessível. Corrigir reaplicando o passo 4, ou deduplicar e aplicar o `ALTER TABLE` |
+| Tecla **T** não teleporta para a arena do boss | `DEBUG_COMMANDS` ausente no `server/.env` (passo 6) — comportamento esperado, não bug |
 | `Unknown database 'jogo_pi'` | schema não aplicado (passo 4) |
 | `Unknown column 'X'` / tabela vazia | schema desatualizado — `db/setup_banco.sql` não foi reaplicado após mudança de schema |
 | Mudança de cena não aparece no jogo | cache do navegador — Ctrl+Shift+R |
