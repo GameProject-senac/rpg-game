@@ -111,9 +111,31 @@ Mesmo ligado, o teleporte respeita o nível mínimo da arena (`PORTAL_BOSS_MIN_L
 AGENTS.md §08, "Guardas autoritárias de ação de mundo". Sem a variável, pressionar T não faz nada
 e o servidor loga `[debug_tp_boss] Ignorado`.
 
+### 7. Migração: coluna `Itens.slot_categoria` (quem JÁ tem banco)
+
+⚠️ **Obrigatório para quem puxar o commit `15428ca` com um banco `jogo_pi` já existente.** O servidor passou a
+derivar o slot dedicado de armadura (15/16/17/18) e a exclusividade de equipamento por categoria da coluna
+`Itens.slot_categoria`, em vez do prefixo do nome do item. Sem a coluna, **todo item cai em `'indefinido'` e o
+equipamento de armadura para de funcionar**.
+
+* **Banco descartável / máquina nova:** reaplicar o passo 4 (`mysql -u root -p < db/setup_banco.sql`) já resolve —
+  a coluna e a população entraram no script.
+* **Banco com progresso a preservar:** aplicar só a parte nova — o `ALTER TABLE` abaixo e, em seguida, os **8
+  `UPDATE Itens SET slot_categoria = ...`** que estão no fim do `db/setup_banco.sql` (copiar de lá, para não
+  divergir das duas frentes):
+
+```sql
+ALTER TABLE Itens ADD COLUMN slot_categoria VARCHAR(20) NULL
+  COMMENT 'peitoral|capacete|calca|botas|arma|escudo|acessorio|municao' AFTER tipo;
+```
+
+Conferir no boot: o servidor imprime `[catalogo] N item(ns) sem slot_categoria` se algo ficou de fora. Silêncio
+significa que todos foram categorizados.
+
 ---
 
 ## Diagnóstico rápido
+
 
 | Sintoma | Causa provável |
 | --- | --- |
