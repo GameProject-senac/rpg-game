@@ -65,15 +65,63 @@ export class Preload extends Phaser.Scene {
         this.load.image('tileset-grass', 'assets/tilesets/Grass.png');
         this.load.image('tileset-props', 'assets/tilesets/Props.png');
         this.load.image('tileset-plants', 'assets/tilesets/Plants.png');
+        this.load.image('functional-hud-source', 'assets/iconesFuncionais/nova_barra.png');
+        this.load.image('level-icons', 'assets/iconesFuncionais/level.png');
+
+        this.load.spritesheet('book_bg', 'assets/inventory/inventarioBasico.png', {
+            frameWidth: 435,
+            frameHeight: 302
+        });
+        this.load.spritesheet('slot-select', 'assets/inventory/Select_SpriteSheet.png', {
+            frameWidth: 18,
+            frameHeight: 18
+        });
+        this.load.image('inventory-exterior', 'assets/inventory/selecao.png');
+        const inventoryAssets = [
+            'Anel.png',
+            'arco.png',
+            'botasAtirador.png',
+            'botasGuerreiro.png',
+            'botasMago.png',
+            'botasSuporte.png',
+            'botasTank.png',
+            'cajadoMago.png',
+            'cajadoSuporte.png',
+            'calçaAtirador.png',
+            'calçaGuerreiro.png',
+            'calçaMago.png',
+            'calçaSuporte.png',
+            'calçaTank.png',
+            'capaceteGuerreiro.png',
+            'capaceteTank.png',
+            'capuz.png',
+            'chapéuMago.png',
+            'clava.png',
+            'escudo.png',
+            'espada.png',
+            'flecha.png',
+            'lança.png',
+            'marreta.png',
+            'peitoralAtirador.png',
+            'peitoralGuerreiro.png',
+            'peitoralMago.png',
+            'peitoralSuporte.png',
+            'peitoralTank.png'
+        ];
+        for (const filename of inventoryAssets) {
+            const key = filename.slice(0, -4);
+            this.load.image(key, `assets/inventory/Itens/${filename}`);
+        }
     }
 
     create() {
         console.log('[Preload] Preload concluído.');
+        this.createFunctionalHudTextures();
         ensurePlayerAnimations(this);
         ensureEnemyAnimations(this);
         ensureWarriorAnimations(this);
 
-        if (!this.anims.exists('portal-loop')) {
+        if (!this.anims.exists('portal-loop') && this.textures.exists('portal')) {
             this.anims.create({
                 key: 'portal-loop',
                 frames: this.anims.generateFrameNumbers('portal', { start: 0, end: 16 }),
@@ -84,5 +132,26 @@ export class Preload extends Phaser.Scene {
 
         // Quando tudo carregar, vai pro Menu
         this.scene.start('MainMenu');
+    }
+
+    createFunctionalHudTextures() {
+        const source = this.textures.get('functional-hud-source').getSourceImage();
+        const texture = this.textures.createCanvas('functional-hud', source.width, source.height);
+        const context = texture.getContext();
+        context.drawImage(source, 0, 0);
+
+        const imageData = context.getImageData(0, 0, source.width, source.height);
+        const pixels = imageData.data;
+        for (let index = 0; index < pixels.length; index += 4) {
+            if (pixels[index] >= 250 && pixels[index + 1] >= 250 && pixels[index + 2] >= 250) {
+                pixels[index + 3] = 0;
+            }
+        }
+        context.putImageData(imageData, 0, 0);
+        texture.refresh();
+        texture.add('hp', 0, 32, 514, 680, 165);
+        texture.add('mana', 0, 810, 514, 674, 165);
+
+        this.textures.get('level-icons').add('level-badge', 0, 310, 140, 90, 55);
     }
 }

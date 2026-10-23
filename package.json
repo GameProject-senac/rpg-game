@@ -14,9 +14,9 @@
   "dependencies": {
     "cors": "^2.8.6",
     "dotenv": "^17.4.2",
-    "mysql2": "^3.23.1",
+    "mysql2": "^3.24.5",
     "phaser": "^4.1.0",
-    "ws": "^8.21.1"
+    "ws": "^8.22.0"
   },
   "repository": {
     "type": "git",
