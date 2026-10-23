@@ -2,11 +2,33 @@
 -- setup_banco.sql — Kit de montagem portátil do banco jogo_pi
 -- FASE A / PASSO A1 — schema oficial + adições de Itens + dados mínimos
 --
--- ATENÇÃO: este script é DESTRUTIVO. A primeira linha apaga o banco
--- jogo_pi inteiro (se existir) e recria do zero. NÃO rode isto num banco
+-- COMO RODAR (precisa de conta privilegiada — root, não rpg_app):
+--     mysql -u root -p < db/setup_banco.sql
+-- O rpg_app NÃO consegue rodar isto: ele só tem privilégio dentro de jogo_pi,
+-- e o script precisa de DROP/CREATE DATABASE, CREATE USER e GRANT.
+--
+-- CAIXA DOS NOMES DE TABELA: no Windows o MySQL costuma vir com
+-- lower_case_table_names=1 e grava `Itens` como `itens`; no Linux o padrão é 0 e o
+-- nome fica `Itens` como escrito aqui. Os dois funcionam porque o server.js sempre
+-- escreve `Itens`. O que NÃO funciona é levar um DUMP feito no Windows (tabela
+-- `itens`) para um Linux — lá o `FROM Itens` não acha. Entre máquinas, use ESTE
+-- script, não um dump.
+--
+-- ATENÇÃO: este script é DESTRUTIVO. Ele apaga os bancos rpg_game (legado) e
+-- jogo_pi inteiros, se existirem, e recria o jogo_pi do zero. NÃO rode isto num banco
 -- que tenha dados a preservar. É um kit de teste portátil, pensado pra
 -- rodar igual nos dois PCs (casa/curso) e sempre terminar no mesmo estado.
 -- =====================================================================
+
+-- UM BANCO SÓ: o projeto inteiro vive em `jogo_pi`. O `rpg_game` abaixo é o schema
+-- LEGADO pré-migração A1 (os arquivos dele já saíram do repositório em 2026-09-16,
+-- mas o BANCO continuava existindo nas máquinas e o server/.env.example ainda
+-- apontava pra ele — máquina nova nascia conectada no banco errado). Derrubar aqui
+-- garante que toda máquina termine com uma única fonte de verdade.
+--
+-- ATENÇÃO: isto APAGA o rpg_game e os dados de teste antigos dele. Se alguma
+-- máquina ainda tiver algo que preste lá, salve ANTES de rodar.
+DROP DATABASE IF EXISTS rpg_game;
 
 DROP DATABASE IF EXISTS jogo_pi;
 CREATE DATABASE IF NOT EXISTS jogo_pi;
@@ -298,5 +320,22 @@ INSERT INTO inventario (personagem_id, item_id, quantidade, equipado) VALUES
 
 
 
+-- =====================================================================
+-- 3. USUÁRIO DA APLICAÇÃO
+--
+-- O CREATE USER abaixo não existia e o script quebrava em máquina nova: desde o
+-- MySQL 8.0 o GRANT NÃO cria mais a conta implicitamente (a criação automática foi
+-- removida), então o GRANT sozinho falha quando 'rpg_app' ainda não existe — que é
+-- exatamente o caso da máquina nova que este kit existe pra atender.
+--
+-- IF NOT EXISTS: em máquina que JÁ tem o rpg_app isto é no-op e NÃO troca a senha
+-- atual — rodar o script aqui não quebra o seu server/.env.
+--
+-- A senha abaixo é placeholder de propósito: senha real não entra em arquivo
+-- versionado (é por isso que server/.env é gitignored). Em máquina nova, use a
+-- mesma string aqui e em DB_PASSWORD no server/.env, ou troque depois com:
+--     ALTER USER 'rpg_app'@'localhost' IDENTIFIED BY 'a_sua_senha';
+-- =====================================================================
+CREATE USER IF NOT EXISTS 'rpg_app'@'localhost' IDENTIFIED BY 'troque_esta_senha';
 GRANT ALL PRIVILEGES ON jogo_pi.* TO 'rpg_app'@'localhost';
 FLUSH PRIVILEGES;

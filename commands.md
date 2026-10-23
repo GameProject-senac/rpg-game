@@ -1,6 +1,3 @@
-node server/server.js 
+node server/server.js        # servidor autoritativo  -> porta 8080
 
-
-#Servidor Node.js
-
-python -m http.server 8000
+python -m http.server 8000   # client estático        -> porta 8000

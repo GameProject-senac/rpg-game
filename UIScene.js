@@ -175,8 +175,14 @@ export class UIScene extends Phaser.Scene {
     renderStats(stats) {
         this.statsText.setText(`NÍVEL: ${stats.nivel}  HP: ${stats.hp_atual}/${stats.hp_max}  DANO: ${stats.dano_base}  DEF: ${stats.defesa_base}  XP: ${Math.floor(stats.experiencia)}`);
 
+        // Progresso DENTRO do nível atual. `experiencia` é XP total de carreira e table_nivel
+        // guarda limiares cumulativos, então `experiencia / xp_proximo_nivel` nunca começava em 0
+        // ao subir de nível — a barra já nascia parcialmente cheia. A fração certa desconta o
+        // limiar do nível atual dos dois lados.
         // Nível máximo (xp_proximo_nivel null): barra cheia, sem divisão por zero.
-        const fracao = stats.xp_proximo_nivel ? Phaser.Math.Clamp(stats.experiencia / stats.xp_proximo_nivel, 0, 1) : 1;
+        const base = stats.xp_nivel_atual ?? 0;
+        const faixa = stats.xp_proximo_nivel ? stats.xp_proximo_nivel - base : 0;
+        const fracao = faixa > 0 ? Phaser.Math.Clamp((stats.experiencia - base) / faixa, 0, 1) : 1;
         this.xpBarFill.width = 200 * fracao;
     }
 

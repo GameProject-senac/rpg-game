@@ -28,6 +28,36 @@ const BUFF_DANO = 5;
 const BUFF_DEFESA = 2;
 const XP_POR_DANO = 0.1; // XP = dano_efetivo × esta constante, pra TODO golpe (sem pico de abate — decisão do dono, comuns)
 
+// Guarda autoritária de ataque do jogador (C2 da auditoria). Antes disso, alcance e cooldown
+// moravam SÓ no client (ExploracaoCombate.js: 85px e 350ms) — o servidor aceitava `attack_enemy`
+// com qualquer enemyId, de qualquer distância, na frequência que o socket aguentasse (Boss de
+// 1000 HP morto do outro lado do mapa; e como XP é por dano, XP e loot infinitos).
+//
+// Por que o alcance do servidor NÃO é igual ao do client: os dois medem coisas diferentes. O
+// client mede da sua posição PREDITA localmente até o sprite do inimigo INTERPOLADO; o servidor
+// mede das posições autoritativas. Duas fontes de divergência somam: predição local do jogador
+// (300px/s × 50ms de throttle ≈ 15px) e o atraso de regime do lerp 0.15 do sprite do inimigo
+// (≈19px a 200px/s). Daí a folga explícita — servidor estrito em 85px rejeitaria golpe legítimo
+// por latência. A folga é o preço de ter autoridade sem punir o jogador honesto.
+const ATAQUE_ALCANCE_BASE = 85;        // espelha o attackRange do client
+const ATAQUE_ALCANCE_FOLGA = 50;       // divergência predição + interpolação (ver acima)
+const ATAQUE_ALCANCE = ATAQUE_ALCANCE_BASE + ATAQUE_ALCANCE_FOLGA;
+// Mais CURTO que os 350ms do client, de propósito: jitter de envio/fila não pode derrubar um
+// golpe válido. Teto real de cadência vira ~3.3 golpes/s em vez de ilimitado.
+const ATAQUE_COOLDOWN_MS = 300;
+
+// A2: `debug_tp_boss` teleporta pra arena pulando o nivel minimo E os 4s de canalizacao do
+// portal - qualquer client pode mandar. Continua LIGADO por padrao (e ferramenta de teste de
+// campo em uso diario, tecla T); o que muda e existir um interruptor unico pra desligar antes
+// de expor o servidor: DEBUG_COMMANDS=false no .env (ou na env do Railway).
+const DEBUG_COMMANDS = process.env.DEBUG_COMMANDS !== 'false';
+
+// A3: raio de coleta autoritativo. A coleta real e um overlap de corpos ~40px no client; a
+// folga cobre so a divergencia da predicao do proprio jogador (o item e estatico, nao
+// interpola como o inimigo), por isso e bem menor que a tolerancia do ataque. Resolve zona
+// de brinde: drop da arena nasce em ~5000, longe demais de quem esta no mapa normal.
+const COLETA_ALCANCE = 120;
+
 // Zonas do Jogo e Limites Autoritários (Sub-passo A, Peça 2)
 const GAME_ZONES = {
     'mapa_normal': { minX: 0, maxX: 2000, minY: 0, maxY: 2000 },
@@ -69,6 +99,13 @@ function recalcularAtributosEfetivos(player) {
     player.hp_max = base.hp_max + bonus.bonus_hp;
     player.dano_base = base.dano_base + bonus.bonus_dano;
     player.defesa_base = base.defesa_base + bonus.bonus_defesa;
+
+    // B4: hp_atual nunca pode passar do hp_max recalculado. Sem isto, desequipar uma peça com
+    // bonus_hp (o escudo dá +20) com a vida cheia deixava hp_atual > hp_max — e a barra do client
+    // desenha `width * (hp/hp_max)`, então ela estourava a própria moldura. Mesmo caminho vale no
+    // join, se o banco guardar um hp_atual maior que o hp_max que acabou de ser derivado.
+    // Só teto: subir de nível aumenta hp_max e não cura, então o ramo nem é tocado.
+    if (player.hp_atual > player.hp_max) player.hp_atual = player.hp_max;
 }
 
 // Tabela de nível (banco `jogo_pi`, `table_nivel`): xp_necessaria é o XP TOTAL acumulado pra
@@ -179,6 +216,7 @@ function iniciarServidor() {
 const PORT = process.env.PORT || 8080;
 const wss = new WebSocket.Server({ port: PORT });
 console.log(`🚀 Servidor WebSocket AUTORITÁRIO iniciado na porta ${PORT} (Tick Rate: 20Hz)`);
+if (DEBUG_COMMANDS) console.warn('[AVISO] Comandos de debug LIGADOS (debug_tp_boss). DEBUG_COMMANDS=false desliga.');
 
 // O estado supremo do jogo agora reside aqui
 const gameState = {
@@ -271,6 +309,12 @@ function resolveSpawnPosition(anchor) {
     };
 }
 
+// Zona de um inimigo: derivada de is_boss, não armazenada. Era duplicada no tick loop e
+// precisava de uma 2ª cópia na guarda de ataque (C2) — extraída pra não existirem três.
+function zonaDoInimigo(enemy) {
+    return enemy.is_boss ? 'arena_boss' : 'mapa_normal';
+}
+
 function isPlayerInsidePortal(player) {
     if (!player || player.zona !== 'mapa_normal' || player.hp_atual <= 0) return false;
     const dx = player.x - PORTAL_BOSS_ENTRY.x;
@@ -335,11 +379,43 @@ function teleportGroupToArena(players) {
     }
 }
 
+// D1: DTOs publicos. O `state_update` mandava `gameState.players` CRU 20x por segundo - ou
+// seja, o inventario inteiro (linhas ja com JOIN em Itens), `experiencia`, `inventarioAberto`,
+// `xp_boss`, `invulneravelAte` e `lastAttackAt` de TODO mundo, para TODO mundo. O client le
+// exatamente dois campos disso no state_update: x e y. Alem do desperdicio de banda e de
+// JSON.stringify a 20Hz, o inventario de cada jogador vazava para os outros.
+// Mesmo problema nos inimigos: `damageHistory` do boss (um objeto que cresce por jogador) e
+// `lastAttackTime` iam no fio sem ninguem ler.
+// Os DTOs alocam alguns objetos por tick, mas trocam isso por um payload muito menor - o
+// custo dominante aqui era serializar as linhas de inventario, nao alocar.
+// Campos: exatamente o que spawnRemotePlayer/spawnEnemy/handleStateUpdate consomem no client.
+function dtoPlayer(p) {
+    return { id: p.id, nome: p.nome, classe: p.classe, zona: p.zona,
+             x: p.x, y: p.y, hp_atual: p.hp_atual, hp_max: p.hp_max };
+}
+
+function dtoEnemy(e) {
+    return { id: e.id, nome: e.nome, is_boss: e.is_boss,
+             x: e.x, y: e.y, hp_atual: e.hp_atual, hp_max: e.hp_max };
+}
+
+function playersPublicos() {
+    const out = {};
+    for (const id in gameState.players) out[id] = dtoPlayer(gameState.players[id]);
+    return out;
+}
+
+function enemiesPublicos() {
+    const out = {};
+    for (const id in gameState.enemies) out[id] = dtoEnemy(gameState.enemies[id]);
+    return out;
+}
+
 function broadcastWorldState() {
     broadcast({
         type: 'state_update',
-        players: gameState.players,
-        enemies: gameState.enemies,
+        players: playersPublicos(),
+        enemies: enemiesPublicos(),
         portal: getPortalSnapshot()
     });
 }
@@ -426,6 +502,37 @@ function verificarResetArena(idIgnorado = null) {
     }
 }
 
+// Processa morte do jogador de forma centralizada e determinística
+function aplicarMortePlayer(player) {
+    if (!player || player.hp_atual > 0) return;
+    const mortoId = player.id;
+    const estavaNaArena = player.zona === 'arena_boss';
+
+    if (estavaNaArena && player.xp_boss > 0) {
+        // Sub-passo C4: Checa se ainda há outros jogadores vivos na arena
+        const outrosVivos = Object.values(gameState.players).filter(
+            p => p.zona === 'arena_boss' && p.hp_atual > 0 && p.id !== mortoId
+        );
+
+        if (outrosVivos.length > 0) {
+            cofresBossCongelados.set(mortoId, player.xp_boss);
+            console.log(`[BOSS COFRE CONGELADO] player_${mortoId} morreu; ${player.xp_boss.toFixed(1)} XP guardado aguardando reentrada.`);
+        } else {
+            console.log(`[BOSS XP DESCARTE] player_${mortoId} morreu (último na arena); ${player.xp_boss.toFixed(1)} XP do cofre descartado.`);
+        }
+        player.xp_boss = 0;
+    }
+
+    broadcast({ type: 'player_died', playerId: mortoId });
+    respawnPendente.add(mortoId);
+    liberarPersonagem(player);
+    playerSockets.delete(mortoId);
+
+    if (estavaNaArena) {
+        verificarResetArena(mortoId);
+    }
+}
+
 // Spawn dedicado do Boss na Arena (P3, Sub-passo C1):
 // Entidade persistente em gameState.enemies com is_boss: true, posicionada na arena (4000..6000)
 // e descolada do ponto de chegada do portal (5000, 5000) para evitar colisão instantânea no teleporte.
@@ -508,17 +615,27 @@ wss.on('connection', (ws) => {
                     return;
                 }
 
+                // A4: reserva AGORA, nao depois dos awaits. A checagem acima e o add() ficavam
+                // separados por tres idas ao banco - dois joins simultaneos do mesmo personagem
+                // passavam os dois pelo has() (ainda falso), e o segundo sobrescrevia
+                // gameState.players/playerSockets, deixando o primeiro socket orfao mas ainda
+                // identificado. Reservar antes fecha a janela; todo caminho de falha abaixo
+                // precisa devolver a reserva.
+                activeSessions.add(requestedId);
+
                 let rows;
                 try {
                     [rows] = await pool.query('SELECT * FROM personagens WHERE id = ?', [requestedId]);
                 } catch (dbErr) {
                     console.error('[join] Erro ao consultar personagem:', dbErr);
+                    activeSessions.delete(requestedId); // A4: devolve a reserva
                     ws.close(4000, 'Erro ao carregar personagem');
                     return;
                 }
 
                 if (rows.length === 0) {
                     console.log(`[join] Recusado — personagem_id ${requestedId} não encontrado.`);
+                    activeSessions.delete(requestedId); // A4: devolve a reserva
                     ws.close(4000, 'Personagem não encontrado');
                     return;
                 }
@@ -526,6 +643,7 @@ wss.on('connection', (ws) => {
                 const row = rows[0];
                 if (!CLASSES[row.classe]) {
                     console.error(`[join] Classe desconhecida para personagem ${requestedId}: ${row.classe}`);
+                    activeSessions.delete(requestedId); // A4: devolve a reserva
                     ws.close(4000, 'Classe de personagem inválida');
                     return;
                 }
@@ -542,12 +660,12 @@ wss.on('connection', (ws) => {
                     );
                 } catch (dbErr) {
                     console.error('[join] Erro ao consultar inventário:', dbErr);
+                    activeSessions.delete(requestedId); // A4: devolve a reserva
                     ws.close(4000, 'Erro ao carregar inventário');
                     return;
                 }
 
-                personagemId = requestedId;
-                activeSessions.add(personagemId);
+                personagemId = requestedId; // A4: a reserva em activeSessions ja foi feita acima
 
                 // Retorna ao centro se a posição salva pertence à arena ou ao antigo mapa ampliado.
                 const boundsNormal = GAME_ZONES.mapa_normal;
@@ -602,11 +720,21 @@ wss.on('connection', (ws) => {
                     type: 'welcome',
                     id: personagemId,
                     reviveu: concederInvulnerabilidade,
-                    state: gameState,
+                    // D1: so o MEU personagem vai completo (inventario/atributos sao meus);
+                    // os outros jogadores e os inimigos vao no DTO publico.
+                    state: {
+                        players: Object.assign(playersPublicos(), { [personagemId]: player }),
+                        enemies: enemiesPublicos(),
+                        itensNoChao: gameState.itensNoChao
+                    },
+                    // B2: a barra de XP precisa dos DOIS limiares. `experiencia` é XP total de
+                    // carreira e `xp_necessaria` é cumulativo, então `exp / proximo` nunca zera ao
+                    // subir de nível — a fração certa é (exp - atual) / (proximo - atual).
+                    xp_nivel_atual: TABELA_NIVEL.get(player.nivel) ?? 0,
                     xp_proximo_nivel: TABELA_NIVEL.get(player.nivel + 1) ?? null
                 }));
 
-                broadcast({ type: 'player_joined', player }, ws);
+                broadcast({ type: 'player_joined', player: dtoPlayer(player) }, ws);
                 return;
             }
 
@@ -673,15 +801,29 @@ wss.on('connection', (ws) => {
             // AÇÃO: Combate (Encostou no Inimigo)
             else if (data.type === 'attack_enemy') {
                 const enemy = gameState.enemies[data.enemyId];
+
+                // Guarda autoritária (C2): alcance, zona e cooldown. Rejeição SILENCIOSA (return),
+                // mesmo padrão de entrada inválida em equip_item/pickup_item — client legítimo
+                // nunca encosta aqui. Fica ANTES de tudo: XP, loot, cofre do boss e morte do
+                // inimigo são todos downstream, então passam a ser protegidos sem mudança própria.
+                if (enemy) {
+                    const agoraAtaque = Date.now();
+                    if (player.lastAttackAt && (agoraAtaque - player.lastAttackAt) < ATAQUE_COOLDOWN_MS) return;
+
+                    const playerZona = player.zona || 'mapa_normal';
+                    if (playerZona !== zonaDoInimigo(enemy)) return;
+
+                    const distX = player.x - enemy.x;
+                    const distY = player.y - enemy.y;
+                    if ((distX * distX + distY * distY) > (ATAQUE_ALCANCE * ATAQUE_ALCANCE)) return;
+
+                    player.lastAttackAt = agoraAtaque;
+                }
+
                 // Inventário aberto (Passo 1): fora de combate por completo — pula o toque inteiro,
                 // nem o jogador nem o inimigo tomam dano. Sem isso, o inimigo ainda tomava dano
                 // (e podia morrer sozinho batendo no jogador imune) mesmo com o menu aberto.
                 if (enemy && !player.inventarioAberto) {
-                    // Invulnerabilidade de respawn (Round 1): autoritária aqui, não no client —
-                    // concedida no join (ver comentário em `reviveu`) e checada por tempo, sem
-                    // precisar de timer/cleanup — expira sozinha quando Date.now() ultrapassa.
-                    const invulneravel = !!player.invulneravelAte && Date.now() < player.invulneravelAte;
-
                     // Servidor calcula o dano deterministicamente
                     const danoNoEnemy = Math.max(1, player.dano_base - enemy.defesa_base);
                     // Dano efetivo: não estoura a vida restante do inimigo (XP não conta overkill).
@@ -695,12 +837,8 @@ wss.on('connection', (ws) => {
                     }
 
                     enemy.hp_atual -= danoNoEnemy;
-                    if (!invulneravel) {
-                        const danoNoPlayer = Math.max(1, enemy.dano_base - player.defesa_base);
-                        player.hp_atual -= danoNoPlayer;
-                    }
 
-                    // Avisa todos do novo HP
+                    // Avisa todos do novo HP do inimigo (jogador não toma dano instantâneo por atacar)
                     broadcast({
                         type: 'combat_event',
                         enemyId: enemy.id,
@@ -815,41 +953,8 @@ wss.on('connection', (ws) => {
                     }
                     // Verifica morte do Jogador
                     if (player.hp_atual <= 0) {
-                        const mortoId = player.id;
-                        const estavaNaArena = player.zona === 'arena_boss';
-
-                        if (estavaNaArena && player.xp_boss > 0) {
-                            // Sub-passo C4: Checa se ainda há outros jogadores vivos na arena
-                            const outrosVivos = Object.values(gameState.players).filter(
-                                p => p.zona === 'arena_boss' && p.hp_atual > 0 && p.id !== mortoId
-                            );
-
-                            if (outrosVivos.length > 0) {
-                                // A luta continua: cofre fica congelado aguardando reentrada
-                                cofresBossCongelados.set(mortoId, player.xp_boss);
-                                console.log(`[BOSS COFRE CONGELADO] player_${mortoId} morreu; ${player.xp_boss.toFixed(1)} XP guardado aguardando reentrada.`);
-                            } else {
-                                // Era o último na arena: descarta o cofre
-                                console.log(`[BOSS XP DESCARTE] player_${mortoId} morreu (último na arena); ${player.xp_boss.toFixed(1)} XP do cofre descartado.`);
-                            }
-                            player.xp_boss = 0;
-                        }
-
-                        broadcast({ type: 'player_died', playerId: player.id });
-                        // Marca o sinal transitório de respawn AQUI, no instante exato da morte —
-                        // é isso que o próximo join vai consumir pra conceder invulnerabilidade
-                        // (ver comentário em `respawnPendente`). Não depende do hp_atual do banco.
-                        respawnPendente.add(player.id);
-                        // Libera a sessão AGORA, não no close do socket antigo — elimina a corrida
-                        // com o join automático do reconecte. Ordem importa: liberarPersonagem(player)
-                        // precisa rodar antes de zerar personagemId, senão perdemos a referência.
-                        liberarPersonagem(player);
+                        aplicarMortePlayer(player);
                         personagemId = null;
-
-                        // Sub-passo C4: Se estava na arena, verifica se ela esvaziou para resetar boss/cofres
-                        if (estavaNaArena) {
-                            verificarResetArena(mortoId);
-                        }
                     }
                 }
             }
@@ -859,7 +964,14 @@ wss.on('connection', (ws) => {
                 const itemNoChao = gameState.itensNoChao[dropId];
                 
                 // Se o item não existe mais (já foi coletado por outro ou expirou), ignora silenciosamente
-                if (!itemNoChao) return; 
+                if (!itemNoChao) return;
+
+                // A3: coleta autoritativa por distancia. Sem isto, qualquer client coletava
+                // qualquer drop_N de qualquer ponto do mapa - o overlap fisico so existia no client.
+                const dxItem = player.x - itemNoChao.x;
+                const dyItem = player.y - itemNoChao.y;
+                if ((dxItem * dxItem + dyItem * dyItem) > (COLETA_ALCANCE * COLETA_ALCANCE)) return;
+
 
                 // Remove do chão imediatamente para evitar corrida de coleta multiplayer
                 delete gameState.itensNoChao[dropId];
@@ -869,15 +981,20 @@ wss.on('connection', (ws) => {
 
                 try {
                     // Checa se o jogador já tem o item no inventário
-                    const [rows] = await pool.query('SELECT id, quantidade FROM inventario WHERE personagem_id = ? AND item_id = ?', [personagemId, itemNoChao.item_id]);
-                    
-                    if (rows.length > 0) {
-                        // INCREMENTA se já tem
-                        const invId = rows[0].id;
-                        const novaQuantidade = rows[0].quantidade + itemNoChao.quantidade;
-                        await pool.query('UPDATE inventario SET quantidade = ? WHERE id = ?', [novaQuantidade, invId]);
-                    } else {
-                        // INSERE se não tem
+                    // B5: incremento ATOMICO no banco. Antes era SELECT -> await -> UPDATE com o
+                    // valor lido; duas coletas seguidas do mesmo item intercalavam nos awaits,
+                    // liam `quantidade` igual e gravavam o mesmo total - um item sumia. Deixar o
+                    // MySQL somar (quantidade = quantidade + ?) elimina a leitura intermediaria.
+                    const [upd] = await pool.query(
+                        'UPDATE inventario SET quantidade = quantidade + ? WHERE personagem_id = ? AND item_id = ?',
+                        [itemNoChao.quantidade, personagemId, itemNoChao.item_id]
+                    );
+
+                    if (upd.affectedRows === 0) {
+                        // Primeira unidade deste item. Resta uma janela estreita (duas coletas do
+                        // PRIMEIRO exemplar ao mesmo tempo criariam duas linhas); fechar isso de vez
+                        // pede UNIQUE(personagem_id, item_id) + ON DUPLICATE KEY, que e mudanca de
+                        // schema e exige as duas frentes do AGENTS.md seccao 00 - anotado, nao feito aqui.
                         await pool.query('INSERT INTO inventario (personagem_id, item_id, quantidade, equipado) VALUES (?, ?, ?, 0)', [personagemId, itemNoChao.item_id, itemNoChao.quantidade]);
                     }
 
@@ -901,6 +1018,7 @@ wss.on('connection', (ws) => {
             }
             // AÇÃO: Comando de debug para teleportar para o Boss (Passo 3a)
             else if (data.type === 'debug_tp_boss') {
+                if (!DEBUG_COMMANDS) return; // A2: desligado via DEBUG_COMMANDS=false
                 // Teleporta de/para a arena e transiciona a zona
                 const inArena = player.zona === 'arena_boss';
                 const alvoX = inArena ? 1000 : 5000;
@@ -992,6 +1110,7 @@ async function concederXP(player, quantidade) {
         personagem_id: player.id,
         experiencia: player.experiencia,
         nivel: player.nivel,
+        xp_nivel_atual: TABELA_NIVEL.get(player.nivel) ?? 0, // B2: ver comentário no 'welcome'
         xp_proximo_nivel: TABELA_NIVEL.get(player.nivel + 1) ?? null
     });
 
@@ -1026,7 +1145,7 @@ const TICK_RATE = 50; // 20Hz
 setInterval(() => {
     if (wss.clients.size === 0) return; 
 
-    // O servidor move os inimigos
+    const agora = Date.now();
     const dt = TICK_RATE / 1000;
     for (const eid in gameState.enemies) {
         const e = gameState.enemies[eid];
@@ -1041,6 +1160,47 @@ setInterval(() => {
             // Quica nas paredes do mapa normal (0 a 2000px).
             if (e.x <= 15 || e.x >= 1985) e.vx *= -1;
             if (e.y <= 15 || e.y >= 1985) e.vy *= -1;
+        }
+
+        // Ataque autônomo dos inimigos (Sub-passo 3: Cooldown individual do monstro)
+        const alcanceAtaque = e.is_boss ? 80 : 50;
+        const cooldownAtaque = e.is_boss ? 1200 : 1500;
+        if (!e.lastAttackTime || (agora - e.lastAttackTime) >= cooldownAtaque) {
+            for (const pid in gameState.players) {
+                const player = gameState.players[pid];
+                if (!player || player.hp_atual <= 0) continue;
+                if (player.inventarioAberto) continue;
+
+                // Verifica mesma zona (mapa normal vs arena do boss)
+                const playerZona = player.zona || 'mapa_normal';
+                if (playerZona !== zonaDoInimigo(e)) continue;
+
+                const dx = player.x - e.x;
+                const dy = player.y - e.y;
+                if ((dx * dx + dy * dy) <= (alcanceAtaque * alcanceAtaque)) {
+                    e.lastAttackTime = agora;
+
+                    // Invulnerabilidade de respawn
+                    const invulneravel = !!player.invulneravelAte && agora < player.invulneravelAte;
+                    if (!invulneravel) {
+                        const danoNoPlayer = Math.max(1, e.dano_base - player.defesa_base);
+                        player.hp_atual -= danoNoPlayer;
+
+                        broadcast({
+                            type: 'combat_event',
+                            enemyId: e.id,
+                            playerId: player.id,
+                            enemy_hp: e.hp_atual,
+                            player_hp: player.hp_atual
+                        });
+
+                        if (player.hp_atual <= 0) {
+                            aplicarMortePlayer(player);
+                        }
+                    }
+                    break;
+                }
+            }
         }
     }
 
@@ -1087,7 +1247,7 @@ setInterval(() => {
 
     // state_update só atualiza posição de inimigos que o client já conhece, então um inimigo
     // novo precisa de aviso próprio.
-    broadcast({ type: 'enemy_spawned', enemy });
+    broadcast({ type: 'enemy_spawned', enemy: dtoEnemy(enemy) });
 }, ENEMY_RESPAWN_INTERVAL);
 
 // ────────────────────────────────────────────────────────
@@ -1109,7 +1269,7 @@ setInterval(() => {
         bossRespawnAt = null;
         const novoBoss = spawnBoss();
         if (novoBoss) {
-            broadcast({ type: 'enemy_spawned', enemy: novoBoss });
+            broadcast({ type: 'enemy_spawned', enemy: dtoEnemy(novoBoss) });
             console.log(`[BOSS RESPAWN] Boss respawnou na arena com HP cheio (${novoBoss.hp_atual}).`);
         }
     }

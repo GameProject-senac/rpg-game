@@ -158,22 +158,12 @@ export class ExploracaoCombate extends Phaser.Scene {
         this.enemiesGroup = this.physics.add.group();
         this.itensNoChaoGroup = this.physics.add.group();
 
-        // Colisões de Interação (Eventos enviados para o Servidor)
-        this.physics.add.collider(this.player, this.enemiesGroup, (p, enemySprite) => {
-            if (!this.player.invulnerable && this.socket && this.socket.readyState === WebSocket.OPEN) {
-                sendMessage(this.socket, { type: 'attack_enemy', enemyId: enemySprite.serverId });
-
-                // Dispara animação de ataque se for Guerreiro
-                this.triggerPlayerAttack();
-
-                // Cooldown local para não flodar a rede
-                this.player.invulnerable = true;
-                this.time.delayedCall(500, () => this.player.invulnerable = false);
-                
-                // Knockback Visual
-                const angle = Phaser.Math.Angle.Between(enemySprite.x, enemySprite.y, p.x, p.y);
-                p.body.setVelocity(Math.cos(angle) * 500, Math.sin(angle) * 500);
-            }
+        // Interação física suave com inimigos (soft sliding - sem travar o jogador em quinas)
+        this.physics.add.overlap(this.player, this.enemiesGroup, (playerRect, enemySprite) => {
+            const angle = Phaser.Math.Angle.Between(enemySprite.x, enemySprite.y, playerRect.x, playerRect.y);
+            const pushDist = 1.8;
+            playerRect.x += Math.cos(angle) * pushDist;
+            playerRect.y += Math.sin(angle) * pushDist;
         });
 
         // Coleta de itens (Passo 5c) — usamos overlap em vez de collider para o jogador não tropeçar no item
@@ -319,6 +309,19 @@ export class ExploracaoCombate extends Phaser.Scene {
         this.myId = data.id;
         this.playerStats = data.state.players[this.myId];
         this.playerStats.xp_proximo_nivel = data.xp_proximo_nivel;
+        this.playerStats.xp_nivel_atual = data.xp_nivel_atual ?? 0;
+
+        // C3: adota a posição AUTORITATIVA do servidor (vinda de personagens.posicao_x/y).
+        // Antes, o jogador nascia sempre no (1000, 1000) fixo do create() e o primeiro
+        // player_move — 50ms depois — sobrescrevia o servidor com esse valor. Efeito: a posição
+        // salva era descartada em todo join, e tanto o snapshot periódico quanto o
+        // liberarPersonagem gravavam `posicao_x/y` que ninguém nunca leu de volta.
+        // body.reset() (e não só setPosition) porque no Arcade quem manda na posição é o CORPO:
+        // mexer só no GameObject deixa os dois dessincronizados por um frame. Zera a velocidade
+        // de brinde, que é o estado certo pra quem acabou de nascer.
+        // Bounds não mudam aqui: o servidor força `zona: 'mapa_normal'` em todo join
+        // (server.js, handler 'join'), então os limites 0..2000 do create() já valem.
+        this.player.body.reset(this.playerStats.x, this.playerStats.y);
         this.playerVisual.setPosition(this.player.x, this.player.y);
         this.configurePlayerVisualForClass(this.playerStats.classe);
 
@@ -381,8 +384,12 @@ export class ExploracaoCombate extends Phaser.Scene {
     // RESULTADO DE COMBATE (HP UPDATE)
     handleCombatEvent(data) {
         if (data.playerId === this.myId) {
+            const perdeuHp = this.playerStats && data.player_hp < this.playerStats.hp_atual;
             this.playerStats.hp_atual = data.player_hp;
             this.atualizarStatsUI();
+            if (perdeuHp) {
+                this.cameras.main.shake(120, 0.005);
+            }
         } else if (this.otherPlayers.has(data.playerId)) {
             this.otherPlayers.get(data.playerId).hp_atual = data.player_hp;
         }
@@ -438,6 +445,7 @@ export class ExploracaoCombate extends Phaser.Scene {
         this.playerStats.experiencia = data.experiencia;
         this.playerStats.nivel = data.nivel;
         this.playerStats.xp_proximo_nivel = data.xp_proximo_nivel;
+        this.playerStats.xp_nivel_atual = data.xp_nivel_atual ?? 0;
         this.atualizarStatsUI();
     }
 
@@ -479,6 +487,7 @@ export class ExploracaoCombate extends Phaser.Scene {
             defesa_base: this.playerStats.defesa_base,
             hp_atual: this.playerStats.hp_atual,
             experiencia: this.playerStats.experiencia,
+            xp_nivel_atual: this.playerStats.xp_nivel_atual,
             xp_proximo_nivel: this.playerStats.xp_proximo_nivel
         });
     }
@@ -655,6 +664,7 @@ export class ExploracaoCombate extends Phaser.Scene {
             hpGraphics: this.add.graphics(),
             nameText: nameText,
             is_boss: isBoss,
+            nome: state.nome,  // B1: chave de ENEMY_VISUAL_CONFIG — 'Comum'/'Fraco'/..., NÃO a textura
             animPrefix: config ? config.anim : null,
             lastFacing: 'down',
             lastFlipX: false,
@@ -691,13 +701,13 @@ export class ExploracaoCombate extends Phaser.Scene {
     update(time, delta) {
         if (!this.playerStats) return; // Espera o handshake do server
 
-        // 1. Movimentação Local Predita (SÓ PERMITE SE NÃO ESTIVER EM KNOCKBACK NEM COM O INVENTÁRIO ABERTO)
+        // 1. Movimentação Local Predita (SÓ TRAVA SE O INVENTÁRIO ESTIVER ABERTO)
         let isMoving = false;
         let moveDir = null;
 
         if (this.inventoryOpen) {
-            this.player.body.setVelocity(0); // estático — zera até velocidade residual de knockback
-        } else if (!this.player.invulnerable) {
+            this.player.body.setVelocity(0); // estático com inventário aberto
+        } else {
             this.player.body.setVelocity(0);
 
             // Usa o bounds dinâmico real da engine de física para evitar o cabo-de-guerra visual
@@ -1018,25 +1028,80 @@ export class ExploracaoCombate extends Phaser.Scene {
     }
 
     handleManualAttack() {
-        if (this.inventoryOpen || this.playerActionLock) return;
+        if (this.inventoryOpen) return;
+
+        // Cooldown de ataque local (~350ms entre golpes) sem travar movimentação
+        const now = this.time.now;
+        if (this.lastManualAttackTime && (now - this.lastManualAttackTime) < 350) return;
+        this.lastManualAttackTime = now;
+
         this.triggerPlayerAttack();
 
-        if (!this.player.invulnerable && this.socket && this.socket.readyState === WebSocket.OPEN) {
-            let closestEnemy = null;
-            let minDist = 70; // Alcance do golpe com a espada
+        if (this.socket && this.socket.readyState === WebSocket.OPEN) {
+            // Vetor direcional baseado no facing do jogador
+            let fx = 0;
+            let fy = 1;
+            const facing = this.playerLastFacing || 'down';
 
-            this.enemyData.forEach(e => {
-                const dist = Phaser.Math.Distance.Between(this.player.x, this.player.y, e.sprite.x, e.sprite.y);
-                if (dist < minDist) {
-                    minDist = dist;
-                    closestEnemy = e;
+            switch (facing) {
+                case 'up': fx = 0; fy = -1; break;
+                case 'down': fx = 0; fy = 1; break;
+                case 'left': fx = -1; fy = 0; break;
+                case 'right': fx = 1; fy = 0; break;
+                case 'side': fx = this.playerFlipX ? -1 : 1; fy = 0; break;
+                case 'up-left': fx = -0.707; fy = -0.707; break;
+                case 'up-right': fx = 0.707; fy = -0.707; break;
+                case 'down-left': fx = -0.707; fy = 0.707; break;
+                case 'down-right': fx = 0.707; fy = 0.707; break;
+            }
+
+            const attackRange = 85; // Alcance do golpe com a espada
+            let closestEnemy = null;
+            let closestEnemyId = null; // chave do Map = id da instância no servidor (ex.: "enemy_1")
+            let minDist = attackRange;
+
+            this.enemyData.forEach((e, eid) => {
+                const dx = e.sprite.x - this.player.x;
+                const dy = e.sprite.y - this.player.y;
+                const dist = Math.sqrt(dx * dx + dy * dy);
+
+                if (dist <= attackRange) {
+                    // Se estiver muito colado (dist <= 26px), acerta em qualquer ângulo; senão, exige cone frontal (~140°)
+                    let isInFront = dist <= 26;
+                    if (!isInFront && dist > 0) {
+                        const dot = fx * (dx / dist) + fy * (dy / dist);
+                        if (dot >= 0.35) {
+                            isInFront = true;
+                        }
+                    }
+
+                    if (isInFront && dist < minDist) {
+                        minDist = dist;
+                        closestEnemy = e;
+                        closestEnemyId = eid;
+                    }
                 }
             });
 
             if (closestEnemy) {
-                sendMessage(this.socket, { type: 'attack_enemy', enemyId: closestEnemy.serverId });
-                this.player.invulnerable = true;
-                this.time.delayedCall(500, () => this.player.invulnerable = false);
+                sendMessage(this.socket, { type: 'attack_enemy', enemyId: closestEnemyId });
+
+                // Feedback visual de impacto (Hit flash branco instantâneo)
+                if (closestEnemy.sprite && typeof closestEnemy.sprite.setTintFill === 'function') {
+                    closestEnemy.sprite.setTintFill(0xffffff);
+                    this.time.delayedCall(70, () => {
+                        if (closestEnemy.sprite && closestEnemy.sprite.active) {
+                            closestEnemy.sprite.clearTint();
+                            // B1: ENEMY_VISUAL_CONFIG é chaveado pelo NOME do mob ('Fraco',
+                            // 'Elite'...). Indexava pela texture key ('slime'/'skeleton'), que
+                            // nunca bate — cfg saía undefined e o clearTint() acima ficava
+                            // definitivo: Fraco/Forte/Elite perdiam a cor de tier no 1º golpe e
+                            // viravam indistinguíveis de Comum/Medio.
+                            const cfg = ENEMY_VISUAL_CONFIG[closestEnemy.nome];
+                            if (cfg && cfg.tint) closestEnemy.sprite.setTint(cfg.tint);
+                        }
+                    });
+                }
             }
         }
     }
