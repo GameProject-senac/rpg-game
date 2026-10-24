@@ -44,11 +44,19 @@ const USUARIO_MAX_CHARS = 22;
 const SENHA_MIN_CHARS = 4;
 const SENHA_MAX_CHARS = 72;
 
-// Teto de personagens por conta = quantidade de classes disponíveis (decisão do dono do
-// projeto). Derivado de CLASSES em vez de constante solta, então se a equipe adicionar uma
-// classe o teto acompanha sozinho. O teto é TOTAL, não um por classe: dá pra ter dois
-// guerreiros dentro do orçamento.
-const MAX_PERSONAGENS_POR_CONTA = Object.keys(CLASSES).length;
+// UMA CONTA = UM PERSONAGEM (decisão do dono do projeto). Deixou de ser derivado de CLASSES
+// (que dava um teto de 5 e permitia dois guerreiros na mesma conta — medido no banco: a conta
+// `dreian` com dois `dreian`/`guerreiro` nível 1, indistinguíveis na tela).
+//
+// Esta constante é só para a MENSAGEM e para o client montar a tela. Quem IMPÕE a regra é o
+// banco, via `uq_personagem_por_conta UNIQUE (jogadores_id)` — por isso o create_character
+// não conta nada antes de inserir: a contagem teria janela de corrida (dois pedidos em voo
+// passariam os dois), enquanto a constraint recusa o segundo INSERT sempre.
+//
+// A classe, por consequência, é escolhida UMA vez. Trocar exige `reset_character`, que APAGA
+// o personagem; o jogador então escolhe de novo, inclusive a mesma classe — e nesse caso
+// nasce um personagem novo de verdade, não o antigo revivido.
+const MAX_PERSONAGENS_POR_CONTA = 1;
 
 // Senha NUNCA em texto puro, nem em projeto de teste. `scrypt` é do core do Node (zero
 // dependência nova), com salt por usuário e comparação em tempo constante. Formato guardado
@@ -774,18 +782,23 @@ wss.on('connection', (ws) => {
                     ws.send(JSON.stringify({ type: 'character_list', personagens: [] }));
                     return;
                 }
-                // Personagem em sessão ativa é OMITIDO da lista, não marcado como "em uso":
-                // quem está ocupado não está disponível, e o jogador nunca precisa de um
-                // estado bloqueado na tela — sempre existe o caminho de criar um novo
-                // (create_character). Decisão do dono do projeto.
-                const personagens = rows
-                    .filter(row => !activeSessions.has(String(row.id)))
-                    .map(row => ({
-                        id: row.id,
-                        nome: row.nome,
-                        classe: row.classe,
-                        nivel: row.nivel
-                    }));
+                // Personagem em sessão ativa vem MARCADO (`em_sessao`), não omitido.
+                //
+                // Omitir funcionava quando a conta podia ter 5 personagens: escondia o ocupado
+                // e sobrava o caminho de criar outro. Com UM personagem por conta isso virou um
+                // beco sem saída — o único personagem ficava invisível, a tela oferecia "criar",
+                // e a criação era recusada pela `uq_personagem_por_conta`. O jogador ficava sem
+                // nenhuma ação possível e sem explicação.
+                //
+                // Marcado, o client mostra o personagem e desabilita o JOGAR com o motivo. Quem
+                // decide o que fazer com a flag é a tela; o servidor só relata o fato.
+                const personagens = rows.map(row => ({
+                    id: row.id,
+                    nome: row.nome,
+                    classe: row.classe,
+                    nivel: row.nivel,
+                    em_sessao: activeSessions.has(String(row.id))
+                }));
                 // `classes` acompanha a lista para o client montar os botões de criação sem
                 // manter uma segunda cópia dos nomes de classe (CLASSES aqui é a fonte única).
                 ws.send(JSON.stringify({
@@ -835,19 +848,13 @@ wss.on('connection', (ws) => {
                 const nome = sessao.usuario;
 
                 try {
-                    // Teto POR CONTA (não global). Conta só os personagens do dono autenticado.
-                    const [[{ total }]] = await pool.query(
-                        'SELECT COUNT(*) AS total FROM personagens WHERE jogadores_id = ?',
-                        [sessao.jogador_id]
-                    );
-                    if (total >= MAX_PERSONAGENS_POR_CONTA) {
-                        ws.send(JSON.stringify({
-                            type: 'character_create_failed',
-                            message: `Limite de ${MAX_PERSONAGENS_POR_CONTA} personagens por conta atingido.`
-                        }));
-                        return;
-                    }
-
+                    // Sem `SELECT COUNT` antes do INSERT: a regra "uma conta = um personagem" é
+                    // imposta pela constraint `uq_personagem_por_conta` e lida no catch abaixo.
+                    // Contar primeiro seria uma SEGUNDA fonte da mesma regra (§10.6) e ainda por
+                    // cima furada — entre a contagem e o INSERT dois pedidos da mesma conta em
+                    // voo passariam os dois (a corrida do A01/B01). Deixar o banco recusar é
+                    // atômico por construção.
+                    //
                     // hp_max/dano_base/defesa_base são as colunas legadas do schema (NOT NULL
                     // sem default, achado A20): preenchidas aqui só pra satisfazer o schema.
                     // O servidor NUNCA as lê — atributo efetivo é sempre recalculado por
@@ -872,8 +879,86 @@ wss.on('connection', (ws) => {
                         nivel: NIVEL_INICIAL
                     }));
                 } catch (dbErr) {
+                    // ER_DUP_ENTRY aqui só pode ser a `uq_personagem_por_conta`: é a única
+                    // constraint única da tabela. Não é erro de infraestrutura, é a REGRA
+                    // batendo — então vira mensagem de jogo, não log de erro. Sem esta
+                    // tradução o jogador via "Erro ao criar personagem no banco.", que soa
+                    // como banco quebrado quando o banco fez exatamente o que devia.
+                    if (dbErr.code === 'ER_DUP_ENTRY') {
+                        console.log(`[create_character] Recusado — conta ${sessao.jogador_id} já tem personagem.`);
+                        ws.send(JSON.stringify({
+                            type: 'character_create_failed',
+                            message: 'Esta conta já tem um personagem. Use RESETAR para começar de novo com outra classe.'
+                        }));
+                        return;
+                    }
                     console.error('[create_character] Erro ao criar personagem:', dbErr);
                     ws.send(JSON.stringify({ type: 'character_create_failed', message: 'Erro ao criar personagem no banco.' }));
+                }
+                return;
+            }
+
+            // RESET: apaga o personagem da conta e devolve o jogador à escolha de classe.
+            //
+            // É DELETE, não um UPDATE de zeramento (decisão do dono: "volta na base como se
+            // fosse conta recém-criada, nada persiste"). Duas razões técnicas reforçam:
+            //   - O `ON DELETE CASCADE` de `inventario` leva os itens junto, então "nada
+            //     persiste" é garantia do SCHEMA. Um UPDATE dependeria de alguém lembrar de
+            //     zerar cada coluna nova que a tabela ganhar no futuro — e a que esquecessem
+            //     vazaria progresso em silêncio.
+            //   - A classe volta a ser escolhida, e escolher a MESMA tem que produzir um
+            //     personagem novo, não o antigo revivido. Linha nova resolve isso de graça.
+            if (data.type === 'reset_character') {
+                const sessao = resolverSessaoAuth(data.token);
+                if (!sessao) {
+                    ws.send(JSON.stringify({ type: 'auth_required', message: 'Sessão expirada. Faça login novamente.' }));
+                    return;
+                }
+
+                try {
+                    const [rows] = await pool.query(
+                        'SELECT id, classe, nivel FROM personagens WHERE jogadores_id = ?',
+                        [sessao.jogador_id]
+                    );
+                    if (rows.length === 0) {
+                        // Não é erro: a conta já está no estado que o reset produz.
+                        ws.send(JSON.stringify({ type: 'character_reset', id: null, apagados: 0 }));
+                        return;
+                    }
+
+                    const alvo = rows[0];
+
+                    // RECUSA SE ESTÁ EM JOGO. Apagar a linha com o personagem vivo em
+                    // `gameState.players` deixaria o `liberarPersonagem` (morte ou close)
+                    // rodando um UPDATE contra um id que não existe mais — e, pior, o jogador
+                    // seguiria jogando um personagem fantasma até desconectar. A sessão tem que
+                    // acabar primeiro; o `activeSessions` é a mesma fonte que o `join` consulta.
+                    if (activeSessions.has(String(alvo.id))) {
+                        console.log(`[reset_character] Recusado — personagem ${alvo.id} está em sessão ativa.`);
+                        ws.send(JSON.stringify({
+                            type: 'character_reset_failed',
+                            message: 'Este personagem está em jogo. Saia da partida antes de resetar.'
+                        }));
+                        return;
+                    }
+
+                    // `jogadores_id` no WHERE, não só o `id`: o id vem de uma linha que já
+                    // pertence à conta autenticada, mas repetir o dono na cláusula é o que
+                    // garante que nenhum caminho futuro consiga apagar personagem de terceiro.
+                    const [resultado] = await pool.query(
+                        'DELETE FROM personagens WHERE id = ? AND jogadores_id = ?',
+                        [alvo.id, sessao.jogador_id]
+                    );
+
+                    console.log(`[reset_character] Personagem ${alvo.id} (${alvo.classe}, nível ${alvo.nivel}) apagado a pedido da conta ${sessao.jogador_id}.`);
+                    ws.send(JSON.stringify({
+                        type: 'character_reset',
+                        id: alvo.id,
+                        apagados: resultado.affectedRows
+                    }));
+                } catch (dbErr) {
+                    console.error('[reset_character] Erro ao resetar:', dbErr);
+                    ws.send(JSON.stringify({ type: 'character_reset_failed', message: 'Erro ao resetar o personagem.' }));
                 }
                 return;
             }
