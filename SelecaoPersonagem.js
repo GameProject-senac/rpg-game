@@ -3,18 +3,23 @@
  * @description Seleção/criação de personagem DA CONTA autenticada. Entra-se aqui só com token
  * válido vindo da cena Login — o usuário é a identidade absoluta e nada nesta tela é global.
  *
- * Dois caminhos:
- *  1. LISTA SUSPENSA — os personagens desta conta, com progresso preservado. Fechada por padrão.
- *  2. CRIAR NOVO — um card por classe, com um diálogo de confirmação. O personagem nasce base
- *     (nível 1, XP 0, sem inventário) e herda o NOME DA CONTA — não há campo de nome, o servidor
- *     resolve pelo token (create_character). Limitado a MAX_PERSONAGENS_POR_CONTA, que o servidor
- *     deriva da quantidade de classes (5 hoje); como todos compartilham o nome, o que distingue um
- *     do outro na lista é a classe e o nível.
+ * UMA CONTA = UM PERSONAGEM (decisão do dono do projeto, imposta pelo banco via
+ * `uq_personagem_por_conta`). A tela tem dois estados EXCLUDENTES:
+ *
+ *  1. SEM PERSONAGEM — os cards de classe. A escolha vale para toda a conta; o personagem
+ *     nasce base (nível 1, XP 0, sem inventário) e herda o NOME DA CONTA. Não há campo de
+ *     nome: o servidor resolve pelo token (create_character), e um `nome` vindo daqui seria
+ *     ignorado.
+ *  2. COM PERSONAGEM — o painel dele, com JOGAR e RESETAR. RESETAR apaga o personagem
+ *     (reset_character) e devolve a tela ao estado 1, com a classe livre pra mudar.
+ *
+ * Não existe mais lista suspensa: ela só fazia sentido com teto de 5 personagens. Com um só,
+ * uma barra que precisava ser clicada pra revelar um único item era atrito puro — e foi onde
+ * o jogador ficou preso (ver também o crash de shutdown, commit 6ccfb46).
  *
  * Conexões curtas e independentes, uma por ação (Modelo B — ver networkConfig.js); o token
- * acompanha cada mensagem. Personagem em sessão ativa é omitido pelo servidor em vez de
- * marcado "em uso": quem está ocupado não está disponível, e criar um novo é sempre possível
- * (dentro do teto), então o jogador nunca cai num estado bloqueado.
+ * acompanha cada mensagem. Personagem numa partida aberta vem MARCADO (`em_sessao`) em vez de
+ * omitido: com um personagem por conta, escondê-lo deixaria a tela sem nenhuma ação possível.
  */
 
 import { SERVER_URL, sendMessage } from './networkConfig.js';
@@ -44,15 +49,9 @@ export class SelecaoPersonagem extends Phaser.Scene {
     create() {
         this.sockets = new Set();
         this.elementosLista = [];
-        this.elementosDropdown = [];
         this.dialogo = null;
         this.personagens = [];
         this.classes = [];
-        this.dropdownAberto = false;
-        // Reset obrigatório: o Phaser REUSA a instância da cena entre entradas, então a flag
-        // ligada no shutdown anterior sobreviveria e a barra da lista nunca mais voltaria ao
-        // rótulo fechado ao reentrar nesta tela.
-        this.cenaEncerrando = false;
 
         this.token = this.registry.get('auth_token');
         this.usuario = this.registry.get('auth_usuario');
@@ -89,11 +88,14 @@ export class SelecaoPersonagem extends Phaser.Scene {
         this.carregarLista();
 
         this.events.once('shutdown', () => {
-            // Marca ANTES de fechar: `fecharDropdown` não pode mexer em texto de GameObject
-            // daqui pra frente (ver o porquê no próprio método).
-            this.cenaEncerrando = true;
+            // ⚠️ Daqui pra frente, SÓ destruir — nunca `setText`/`setFillStyle` em GameObject.
+            // No shutdown o objeto ainda é truthy (o `?.` não salva), mas a textura interna já
+            // foi destruída pelos sistemas do Phaser, que registram seus listeners de SHUTDOWN
+            // ANTES deste. Um setText aqui estoura dentro do Phaser, a exceção sobe pelo
+            // Systems.shutdown e ABORTA o SceneManager.stop — o scene.start() que provocou o
+            // shutdown nunca completa, e a tela fica viva e inerte, sem erro visível. Foi
+            // exatamente o bug da lista suspensa (commit 6ccfb46).
             this.fecharDialogo();
-            this.fecharDropdown();
             this.limparLista();
             this.sockets.forEach(socket => this.encerrarSocket(socket));
             this.sockets.clear();
@@ -197,117 +199,80 @@ export class SelecaoPersonagem extends Phaser.Scene {
         this.elementosLista = [];
     }
 
+    // DUAS TELAS EXCLUDENTES, nunca as duas juntas: ou a conta TEM personagem (painel dele,
+    // com JOGAR e RESETAR) ou NÃO TEM (os cards de classe). Não existe mais lista suspensa —
+    // ela só fazia sentido quando a conta podia ter 5 personagens; com um só, uma barra que
+    // precisa ser clicada pra revelar um unico item era puro atrito, e era onde o jogador
+    // ficava preso sem perceber que havia algo a expandir.
     renderList() {
         this.limparLista();
-        this.fecharDropdown();
 
-        const usados = this.personagens.length;
-        const noLimite = usados >= this.maxPersonagens;
+        const personagem = this.personagens[0] ?? null;
+        this.statusText.setText(personagem
+            ? `${rotuloDaClasse(personagem.classe)}  ·  nível ${personagem.nivel}`
+            : 'Escolha uma classe para começar');
 
-        this.statusText.setText(`personagens: ${usados}/${this.maxPersonagens}`);
-        this.renderDropdown(250);
-        this.renderCriacao(430, noLimite);
+        if (personagem) this.renderPersonagem(300, personagem);
+        else this.renderCriacao(300);
     }
 
-    // Lista SUSPENSA: barra fechada por padrão, expande sob demanda (decisão do dono do
-    // projeto). Mantém a tela curta independente de quantos personagens a conta tenha.
-    renderDropdown(y) {
-        const titulo = this.add.text(960, y, 'RETOMAR PERSONAGEM', {
-            fontFamily: 'Arial', fontSize: '20px', color: '#00ffff', fontStyle: 'bold'
+    // Painel do personagem único da conta. `em_sessao` vem do servidor (list_characters) e
+    // significa que ESTE personagem está numa partida aberta agora — provavelmente outra aba
+    // ou uma sessão que não fechou direito. Nesse caso JOGAR é barrado aqui porque o `join`
+    // seria recusado pelo servidor de qualquer forma (código 4000); barrar com o motivo na
+    // tela é melhor do que deixar tentar e cair numa falha de conexão sem explicação.
+    renderPersonagem(y, personagem) {
+        const emSessao = personagem.em_sessao === true;
+
+        const painel = this.add.rectangle(960, y + 70, 700, 190, 0x071d26, 0.9)
+            .setStrokeStyle(2, 0x00ffff);
+        const nome = this.add.text(960, y + 18, personagem.nome, {
+            fontFamily: 'Arial', fontSize: '30px', color: '#ffffff', fontStyle: 'bold'
         }).setOrigin(0.5);
-        this.elementosLista.push(titulo);
-
-        if (this.personagens.length === 0) {
-            const vazio = this.add.text(960, y + 50,
-                'Nenhum personagem nesta conta. Crie um abaixo para começar.', {
-                fontFamily: 'Courier', fontSize: '15px', color: '#888888'
-            }).setOrigin(0.5);
-            this.elementosLista.push(vazio);
-            return;
-        }
-
-        this.dropdownY = y + 56;
-        const barra = this.add.rectangle(960, this.dropdownY, 620, 48, 0x114455)
-            .setStrokeStyle(2, 0x00ffff)
-            .setDepth(50)
-            .setInteractive({ useHandCursor: true });
-        this.dropdownLabel = this.add.text(960, this.dropdownY,
-            `Selecione um personagem  (${this.personagens.length})   ▾`, {
-            fontFamily: 'Courier', fontSize: '16px', color: '#ffffff'
-        }).setOrigin(0.5).setDepth(51);
-
-        barra.on('pointerdown', () => this.alternarDropdown());
-        barra.on('pointerover', () => barra.setFillStyle(0x1a6680));
-        barra.on('pointerout', () => barra.setFillStyle(0x114455));
-
-        this.elementosLista.push(barra, this.dropdownLabel);
-    }
-
-    alternarDropdown() {
-        if (this.dropdownAberto) this.fecharDropdown();
-        else this.abrirDropdown();
-    }
-
-    abrirDropdown() {
-        this.fecharDropdown();
-        this.dropdownAberto = true;
-        this.dropdownLabel?.setText(`Selecione um personagem  (${this.personagens.length})   ▴`);
-
-        const alturaItem = 42;
-        this.personagens.forEach((personagem, indice) => {
-            const itemY = this.dropdownY + 32 + indice * alturaItem;
-
-            // Depth alto: a lista aberta passa POR CIMA dos cards de criação que ficam abaixo.
-            const bg = this.add.rectangle(960, itemY, 620, alturaItem - 4, 0x0d3340)
-                .setStrokeStyle(1, 0x2f9fbf)
-                .setDepth(60)
-                .setInteractive({ useHandCursor: true });
-            const label = this.add.text(960, itemY,
-                `${personagem.nome}  —  ${rotuloDaClasse(personagem.classe)}  ·  nível ${personagem.nivel}`, {
-                fontFamily: 'Courier', fontSize: '15px', color: '#dff6ff'
-            }).setOrigin(0.5).setDepth(61);
-
-            bg.on('pointerover', () => bg.setFillStyle(0x1a6680));
-            bg.on('pointerout', () => bg.setFillStyle(0x0d3340));
-            bg.on('pointerdown', () => this.selecionar(personagem.id));
-
-            this.elementosDropdown.push(bg, label);
-        });
-    }
-
-    fecharDropdown() {
-        this.elementosDropdown.forEach(elemento => elemento.destroy());
-        this.elementosDropdown = [];
-        // `cenaEncerrando` barra o setText durante o shutdown. O `?.` abaixo NÃO basta e dava
-        // falsa segurança: no shutdown o objeto Text ainda é truthy — quem já morreu é a
-        // textura interna dele, destruída pelos sistemas do Phaser, que registram seus
-        // listeners de SHUTDOWN ANTES do handler desta cena. O setText então entrava e
-        // estourava lá dentro ("Cannot read properties of null (reading 'drawImage')").
-        //
-        // O estrago não era cosmético: a exceção subia pelo Systems.shutdown e ABORTAVA o
-        // SceneManager.stop, então o scene.start() que provocou o shutdown nunca completava.
-        // Sintoma: com a lista aberta, clicar num personagem não fazia absolutamente nada —
-        // a tela ficava viva e inerte, sem erro visível pro jogador.
-        if (this.dropdownAberto && !this.cenaEncerrando) {
-            this.dropdownLabel?.setText(`Selecione um personagem  (${this.personagens.length})   ▾`);
-        }
-        this.dropdownAberto = false;
-    }
-
-    renderCriacao(y, noLimite) {
-        const titulo = this.add.text(960, y, 'CRIAR NOVO PERSONAGEM', {
-            fontFamily: 'Arial', fontSize: '20px', color: noLimite ? '#666666' : '#00ff88', fontStyle: 'bold'
+        const info = this.add.text(960, y + 58,
+            `${rotuloDaClasse(personagem.classe)}  ·  nível ${personagem.nivel}`, {
+            fontFamily: 'Courier', fontSize: '18px', color: '#88ddee'
         }).setOrigin(0.5);
-        this.elementosLista.push(titulo);
+        this.elementosLista.push(painel, nome, info);
 
-        if (noLimite) {
-            const aviso = this.add.text(960, y + 46,
-                `Limite de ${this.maxPersonagens} personagens por conta atingido.`, {
-                fontFamily: 'Courier', fontSize: '15px', color: '#ffaa66'
-            }).setOrigin(0.5);
-            this.elementosLista.push(aviso);
-            return;
-        }
+        const jogar = this.criarBotao(
+            860, y + 120, 200, 48,
+            emSessao ? 'EM PARTIDA' : 'JOGAR',
+            emSessao ? 0x2a2a2a : 0x0d3326,
+            emSessao ? 0x666666 : 0x00ff88,
+            emSessao ? '#888888' : '#aaffcc',
+            () => {
+                if (emSessao) {
+                    this.mostrarFeedback('Este personagem já está numa partida aberta. Feche a outra aba e recarregue.');
+                    return;
+                }
+                this.selecionar(personagem.id);
+            }
+        );
+        const resetar = this.criarBotao(
+            1080, y + 120, 200, 48, 'RESETAR', 0x3a1a1a, 0xcc5555, '#ffaaaa',
+            () => this.abrirDialogoReset(personagem)
+        );
+        this.elementosLista.push(jogar.bg, jogar.label, resetar.bg, resetar.label);
+
+        const explicacao = this.add.text(960, y + 170,
+            'RESETAR apaga este personagem e devolve a escolha de classe — nível, XP e itens são perdidos.', {
+            fontFamily: 'Courier', fontSize: '13px', color: '#997777'
+        }).setOrigin(0.5);
+        this.elementosLista.push(explicacao);
+    }
+
+    // Só aparece quando a conta NÃO tem personagem. O antigo ramo "limite atingido" sumiu:
+    // com personagem, quem aparece é o painel dele — nunca os cards com um aviso de recusa.
+    renderCriacao(y) {
+        const titulo = this.add.text(960, y, 'ESCOLHA SUA CLASSE', {
+            fontFamily: 'Arial', fontSize: '20px', color: '#00ff88', fontStyle: 'bold'
+        }).setOrigin(0.5);
+        const aviso = this.add.text(960, y + 34,
+            'a escolha vale para toda a conta — para trocar depois, só resetando o personagem', {
+            fontFamily: 'Courier', fontSize: '13px', color: '#779988'
+        }).setOrigin(0.5);
+        this.elementosLista.push(titulo, aviso);
 
         const larguraCard = 300;
         const espaco = 20;
@@ -317,12 +282,12 @@ export class SelecaoPersonagem extends Phaser.Scene {
 
         this.classes.forEach((classe, indice) => {
             const x = inicioX + indice * (larguraCard + espaco);
-            const cardY = y + 70;
+            const cardY = y + 100;
 
             const bg = this.add.rectangle(x, cardY, larguraCard, 70, 0x0d3326)
                 .setStrokeStyle(2, 0x00ff88)
                 .setInteractive({ useHandCursor: true });
-            const label = this.add.text(x, cardY, `+ ${rotuloDaClasse(classe)}`, {
+            const label = this.add.text(x, cardY, rotuloDaClasse(classe), {
                 fontFamily: 'Arial', fontSize: '22px', color: '#aaffcc', fontStyle: 'bold'
             }).setOrigin(0.5);
 
@@ -338,14 +303,11 @@ export class SelecaoPersonagem extends Phaser.Scene {
     // CRIAÇÃO
     // ─────────────────────────────────────────────────────────────────
 
-    // Confirmação de criação. Não há mais campo de nome: o personagem herda o nome da CONTA
-    // (regra do servidor, ver create_character). O diálogo continua existindo em vez de criar
-    // no primeiro clique por dois motivos: evita personagem criado por clique acidental — e o
-    // teto é de MAX_PERSONAGENS_POR_CONTA, não dá pra desfazer — e é onde o jogador descobre a
-    // regra do nome, que de outro modo só apareceria como fato consumado na lista.
+    // Confirmação de criação. Existe em vez de criar no primeiro clique porque a CLASSE é
+    // escolhida uma vez só: trocar depois exige resetar, o que apaga o personagem inteiro.
+    // Um clique acidental num card custaria caro, então a confirmação paga o próprio atrito.
     abrirDialogoConfirmacao(classe) {
         this.fecharDialogo();
-        this.fecharDropdown();
 
         const painel = this.add.rectangle(960, 460, 680, 230, 0x05161f, 0.98)
             .setStrokeStyle(2, 0x00ff88)
@@ -354,11 +316,8 @@ export class SelecaoPersonagem extends Phaser.Scene {
         const titulo = this.add.text(960, 390, `NOVO ${rotuloDaClasse(classe).toUpperCase()}`, {
             fontFamily: 'Arial', fontSize: '24px', color: '#00ff88', fontStyle: 'bold'
         }).setOrigin(0.5).setDepth(201);
-        const nomeInfo = this.add.text(960, 436, `vai se chamar  ${this.usuario}`, {
-            fontFamily: 'Arial', fontSize: '20px', color: '#ffffff'
-        }).setOrigin(0.5).setDepth(201);
-        const dica = this.add.text(960, 468, 'todo personagem da conta usa o nome da conta — ENTER confirma, ESC cancela', {
-            fontFamily: 'Courier', fontSize: '13px', color: '#88bbaa'
+        const dica = this.add.text(960, 440, 'esta classe vale para toda a conta — ENTER confirma, ESC cancela', {
+            fontFamily: 'Courier', fontSize: '14px', color: '#88bbaa'
         }).setOrigin(0.5).setDepth(201);
 
         const botao = this.add.rectangle(960, 528, 220, 44, 0x0d3326)
@@ -384,17 +343,19 @@ export class SelecaoPersonagem extends Phaser.Scene {
         this.input.keyboard.on('keydown-ESC', onEsc);
 
         this.dialogo = {
-            objetos: [painel, titulo, nomeInfo, dica, botao, botaoLabel],
+            objetos: [painel, titulo, dica, botao, botaoLabel],
             atalhos: { onEnter, onEsc }
         };
     }
 
     fecharDialogo() {
         if (!this.dialogo) return;
-        if (this.dialogo.atalhos) {
-            this.input.keyboard.off('keydown-ENTER', this.dialogo.atalhos.onEnter);
-            this.input.keyboard.off('keydown-ESC', this.dialogo.atalhos.onEsc);
-        }
+        // Cada diálogo registra só os atalhos que usa (o de reset não tem ENTER de
+        // propósito), então remove-se condicionalmente — um `off` com handler undefined
+        // removeria TODOS os listeners daquela tecla, inclusive de terceiros.
+        const atalhos = this.dialogo.atalhos;
+        if (atalhos?.onEnter) this.input.keyboard.off('keydown-ENTER', atalhos.onEnter);
+        if (atalhos?.onEsc) this.input.keyboard.off('keydown-ESC', atalhos.onEsc);
         this.dialogo.objetos.forEach(objeto => objeto.destroy());
         this.dialogo = null;
     }
@@ -426,14 +387,95 @@ export class SelecaoPersonagem extends Phaser.Scene {
         );
     }
 
+    // ─────────────────────────────────────────────────────────────────
+    // RESET
+    // ─────────────────────────────────────────────────────────────────
+
+    // Confirmação OBRIGATÓRIA e deliberadamente desconfortável: o reset é destrutivo e
+    // irreversível — o servidor APAGA a linha do personagem, e o ON DELETE CASCADE leva o
+    // inventário junto. Nada de "desfazer". Por isso o diálogo enuncia o que se perde, e o
+    // botão de confirmar não é o caminho mais fácil (ESC/CANCELAR é o padrão seguro).
+    abrirDialogoReset(personagem) {
+        this.fecharDialogo();
+
+        const painel = this.add.rectangle(960, 460, 760, 250, 0x1f0707, 0.98)
+            .setStrokeStyle(2, 0xcc5555)
+            .setDepth(200)
+            .setInteractive();
+        const titulo = this.add.text(960, 372, 'RESETAR PERSONAGEM?', {
+            fontFamily: 'Arial', fontSize: '24px', color: '#ff8888', fontStyle: 'bold'
+        }).setOrigin(0.5).setDepth(201);
+        const alvoTexto = this.add.text(960, 412,
+            `${personagem.nome}  —  ${rotuloDaClasse(personagem.classe)}  ·  nível ${personagem.nivel}`, {
+            fontFamily: 'Courier', fontSize: '17px', color: '#ffffff'
+        }).setOrigin(0.5).setDepth(201);
+        const perdas = this.add.text(960, 452,
+            'Nível, XP e todos os itens serão apagados. Não há como desfazer.', {
+            fontFamily: 'Courier', fontSize: '14px', color: '#ffaaaa'
+        }).setOrigin(0.5).setDepth(201);
+        const dica = this.add.text(960, 480, 'depois você escolhe a classe de novo, do zero — ESC cancela', {
+            fontFamily: 'Courier', fontSize: '13px', color: '#aa8888'
+        }).setOrigin(0.5).setDepth(201);
+
+        const confirmar = this.criarBotao(860, 536, 220, 46, 'APAGAR E RECOMEÇAR',
+            0x5a1a1a, 0xff6666, '#ffdddd', () => this.resetarPersonagem());
+        confirmar.bg.setDepth(201); confirmar.label.setDepth(202);
+        const cancelar = this.criarBotao(1100, 536, 160, 46, 'CANCELAR',
+            0x1a2a2a, 0x66aaaa, '#cceeee', () => this.fecharDialogo());
+        cancelar.bg.setDepth(201); cancelar.label.setDepth(202);
+
+        // Só ESC tem atalho. ENTER de propósito NÃO confirma: num diálogo destrutivo, a tecla
+        // que o jogador aperta no reflexo não pode ser a que apaga o personagem.
+        const onEsc = () => this.fecharDialogo();
+        this.input.keyboard.on('keydown-ESC', onEsc);
+
+        this.dialogo = {
+            objetos: [painel, titulo, alvoTexto, perdas, dica,
+                      confirmar.bg, confirmar.label, cancelar.bg, cancelar.label],
+            atalhos: { onEsc }
+        };
+    }
+
+    resetarPersonagem() {
+        this.fecharDialogo();
+        this.statusText.setText('Resetando...');
+
+        this.enviarAcao(
+            { type: 'reset_character' },
+            ['character_reset', 'character_reset_failed'],
+            (resposta) => {
+                if (this.tratarAuthExpirada(resposta)) return;
+                if (!resposta) {
+                    this.statusText.setText('Não foi possível conectar ao servidor.');
+                    return;
+                }
+                if (resposta.type === 'character_reset_failed') {
+                    // Caso real: o personagem está em sessão ativa (outra aba). O servidor
+                    // recusa, e recarregar a lista traz o `em_sessao` que explica a tela.
+                    this.carregarLista();
+                    this.mostrarFeedback(resposta.message || 'Não foi possível resetar.');
+                    return;
+                }
+                // Apagado: recarrega e a tela cai sozinha no estado "escolha sua classe".
+                this.carregarLista();
+                this.mostrarFeedback('Personagem apagado. Escolha uma classe para recomeçar.');
+            }
+        );
+    }
+
     mostrarFeedback(mensagem) {
         this.feedbackText.setText(mensagem);
         if (this.feedbackTimer) this.feedbackTimer.remove();
         this.feedbackTimer = this.time.delayedCall(4000, () => this.feedbackText.setText(''));
     }
 
+    // Entra DIRETO no jogo. Antes passava pelo HubCentral, que é um stub de 23 linhas: só
+    // desenha texto e espera ENTER, sem nunca conectar ao servidor. Na prática o jogador
+    // escolhia o personagem e caía numa tela que parecia travada — e era pra lá que a morte
+    // também devolvia. O Hub segue existindo e alcançável pelo ESC do combate; o que saiu foi
+    // ele estar no caminho de ENTRADA, onde não acrescentava nada e só criava um beco.
     selecionar(personagemId) {
         this.registry.set('personagem_id', personagemId);
-        this.scene.start('Loading', { destino: 'HubCentral' });
+        this.scene.start('Loading', { destino: 'ExploracaoCombate' });
     }
 }
