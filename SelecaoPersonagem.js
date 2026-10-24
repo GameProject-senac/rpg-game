@@ -49,6 +49,10 @@ export class SelecaoPersonagem extends Phaser.Scene {
         this.personagens = [];
         this.classes = [];
         this.dropdownAberto = false;
+        // Reset obrigatório: o Phaser REUSA a instância da cena entre entradas, então a flag
+        // ligada no shutdown anterior sobreviveria e a barra da lista nunca mais voltaria ao
+        // rótulo fechado ao reentrar nesta tela.
+        this.cenaEncerrando = false;
 
         this.token = this.registry.get('auth_token');
         this.usuario = this.registry.get('auth_usuario');
@@ -85,6 +89,9 @@ export class SelecaoPersonagem extends Phaser.Scene {
         this.carregarLista();
 
         this.events.once('shutdown', () => {
+            // Marca ANTES de fechar: `fecharDropdown` não pode mexer em texto de GameObject
+            // daqui pra frente (ver o porquê no próprio método).
+            this.cenaEncerrando = true;
             this.fecharDialogo();
             this.fecharDropdown();
             this.limparLista();
@@ -271,7 +278,17 @@ export class SelecaoPersonagem extends Phaser.Scene {
     fecharDropdown() {
         this.elementosDropdown.forEach(elemento => elemento.destroy());
         this.elementosDropdown = [];
-        if (this.dropdownAberto) {
+        // `cenaEncerrando` barra o setText durante o shutdown. O `?.` abaixo NÃO basta e dava
+        // falsa segurança: no shutdown o objeto Text ainda é truthy — quem já morreu é a
+        // textura interna dele, destruída pelos sistemas do Phaser, que registram seus
+        // listeners de SHUTDOWN ANTES do handler desta cena. O setText então entrava e
+        // estourava lá dentro ("Cannot read properties of null (reading 'drawImage')").
+        //
+        // O estrago não era cosmético: a exceção subia pelo Systems.shutdown e ABORTAVA o
+        // SceneManager.stop, então o scene.start() que provocou o shutdown nunca completava.
+        // Sintoma: com a lista aberta, clicar num personagem não fazia absolutamente nada —
+        // a tela ficava viva e inerte, sem erro visível pro jogador.
+        if (this.dropdownAberto && !this.cenaEncerrando) {
             this.dropdownLabel?.setText(`Selecione um personagem  (${this.personagens.length})   ▾`);
         }
         this.dropdownAberto = false;
