@@ -5,9 +5,11 @@
  *
  * Dois caminhos:
  *  1. LISTA SUSPENSA — os personagens desta conta, com progresso preservado. Fechada por padrão.
- *  2. CRIAR NOVO — um card por classe. O personagem nasce base (nível 1, XP 0, sem inventário),
- *     com nome digitado (3-22). Limitado a MAX_PERSONAGENS_POR_CONTA, que o servidor deriva da
- *     quantidade de classes (5 hoje).
+ *  2. CRIAR NOVO — um card por classe, com um diálogo de confirmação. O personagem nasce base
+ *     (nível 1, XP 0, sem inventário) e herda o NOME DA CONTA — não há campo de nome, o servidor
+ *     resolve pelo token (create_character). Limitado a MAX_PERSONAGENS_POR_CONTA, que o servidor
+ *     deriva da quantidade de classes (5 hoje); como todos compartilham o nome, o que distingue um
+ *     do outro na lista é a classe e o nível.
  *
  * Conexões curtas e independentes, uma por ação (Modelo B — ver networkConfig.js); o token
  * acompanha cada mensagem. Personagem em sessão ativa é omitido pelo servidor em vez de
@@ -16,13 +18,8 @@
  */
 
 import { SERVER_URL, sendMessage } from './networkConfig.js';
-import { criarCampoTexto } from './uiTextInput.js';
 
 const CONNECT_TIMEOUT_MS = 5000;
-
-// Espelham NOME_MIN_CHARS/NOME_MAX_CHARS do server.js, que é a autoridade.
-const NOME_MIN_CHARS = 3;
-const NOME_MAX_CHARS = 22;
 
 // Só apresentação — a lista de classes válidas vem do servidor (CLASSES em server.js é a
 // fonte única); isto apenas embeleza o nome na tela.
@@ -314,7 +311,7 @@ export class SelecaoPersonagem extends Phaser.Scene {
 
             bg.on('pointerover', () => bg.setFillStyle(0x12523c));
             bg.on('pointerout', () => bg.setFillStyle(0x0d3326));
-            bg.on('pointerdown', () => this.abrirDialogoNome(classe));
+            bg.on('pointerdown', () => this.abrirDialogoConfirmacao(classe));
 
             this.elementosLista.push(bg, label);
         });
@@ -324,83 +321,76 @@ export class SelecaoPersonagem extends Phaser.Scene {
     // CRIAÇÃO
     // ─────────────────────────────────────────────────────────────────
 
-    abrirDialogoNome(classe) {
+    // Confirmação de criação. Não há mais campo de nome: o personagem herda o nome da CONTA
+    // (regra do servidor, ver create_character). O diálogo continua existindo em vez de criar
+    // no primeiro clique por dois motivos: evita personagem criado por clique acidental — e o
+    // teto é de MAX_PERSONAGENS_POR_CONTA, não dá pra desfazer — e é onde o jogador descobre a
+    // regra do nome, que de outro modo só apareceria como fato consumado na lista.
+    abrirDialogoConfirmacao(classe) {
         this.fecharDialogo();
         this.fecharDropdown();
 
-        const painel = this.add.rectangle(960, 460, 680, 250, 0x05161f, 0.98)
+        const painel = this.add.rectangle(960, 460, 680, 230, 0x05161f, 0.98)
             .setStrokeStyle(2, 0x00ff88)
             .setDepth(200)
             .setInteractive(); // bloqueia cliques nos cards atrás
-        const titulo = this.add.text(960, 378, `NOVO ${rotuloDaClasse(classe).toUpperCase()}`, {
+        const titulo = this.add.text(960, 390, `NOVO ${rotuloDaClasse(classe).toUpperCase()}`, {
             fontFamily: 'Arial', fontSize: '24px', color: '#00ff88', fontStyle: 'bold'
         }).setOrigin(0.5).setDepth(201);
-        const dica = this.add.text(960, 412, 'Digite o nome do personagem — ENTER confirma, ESC cancela', {
-            fontFamily: 'Courier', fontSize: '14px', color: '#88bbaa'
+        const nomeInfo = this.add.text(960, 436, `vai se chamar  ${this.usuario}`, {
+            fontFamily: 'Arial', fontSize: '20px', color: '#ffffff'
         }).setOrigin(0.5).setDepth(201);
-        const erro = this.add.text(960, 498, '', {
-            fontFamily: 'Courier', fontSize: '14px', color: '#ff7777'
-        }).setOrigin(0.5).setDepth(202);
+        const dica = this.add.text(960, 468, 'todo personagem da conta usa o nome da conta — ENTER confirma, ESC cancela', {
+            fontFamily: 'Courier', fontSize: '13px', color: '#88bbaa'
+        }).setOrigin(0.5).setDepth(201);
 
-        // Campo vazio, sem sugestão pré-preenchida: o nome é o que identifica quem é quem
-        // (decisão do dono do projeto), então o jogador tem que digitar — um campo já
-        // preenchido deixaria passar um nome automático que ninguém escolheu.
-        const campo = criarCampoTexto(this, {
-            x: 960, y: 452, largura: 500,
-            placeholder: `nome do seu ${rotuloDaClasse(classe).toLowerCase()}...`,
-            minLength: NOME_MIN_CHARS, maxLength: NOME_MAX_CHARS,
-            contador: true, depth: 201,
-            onEnter: () => confirmar(),
-            onEscape: () => this.fecharDialogo()
-        });
-
-        const botao = this.add.rectangle(960, 542, 220, 44, 0x0d3326)
+        const botao = this.add.rectangle(960, 528, 220, 44, 0x0d3326)
             .setStrokeStyle(2, 0x00ff88)
             .setDepth(201)
             .setInteractive({ useHandCursor: true });
-        const botaoLabel = this.add.text(960, 542, 'CRIAR E JOGAR', {
+        const botaoLabel = this.add.text(960, 528, 'CRIAR E JOGAR', {
             fontFamily: 'Arial', fontSize: '16px', color: '#aaffcc', fontStyle: 'bold'
         }).setOrigin(0.5).setDepth(202);
 
-        const confirmar = () => {
-            const nome = campo.valor();
-            if (nome.length < NOME_MIN_CHARS) {
-                erro.setText(`O nome precisa ter pelo menos ${NOME_MIN_CHARS} caracteres.`);
-                campo.focar();
-                return;
-            }
-            this.criarPersonagem(classe, nome);
-        };
-
+        const confirmar = () => this.criarPersonagem(classe);
         botao.on('pointerdown', confirmar);
         botao.on('pointerover', () => botao.setFillStyle(0x12523c));
         botao.on('pointerout', () => botao.setFillStyle(0x0d3326));
-        painel.on('pointerdown', () => campo.focar());
 
-        this.dialogo = { objetos: [painel, titulo, dica, erro, botao, botaoLabel], campo };
-        campo.focar();
+        // ENTER/ESC saíam de graça no onEnter/onEscape do campo de texto que existia aqui.
+        // Sem o campo, o atalho passa a ser da CENA — e por isso precisa de `off` no
+        // fecharDialogo: o listener sobreviveria ao diálogo e dispararia num diálogo futuro
+        // (ou já destruído) a cada ENTER, criando personagem sem ninguém pedir (§06, item 1).
+        const onEnter = () => confirmar();
+        const onEsc = () => this.fecharDialogo();
+        this.input.keyboard.on('keydown-ENTER', onEnter);
+        this.input.keyboard.on('keydown-ESC', onEsc);
+
+        this.dialogo = {
+            objetos: [painel, titulo, nomeInfo, dica, botao, botaoLabel],
+            atalhos: { onEnter, onEsc }
+        };
     }
 
     fecharDialogo() {
         if (!this.dialogo) return;
-        // O campo tem <input> no document.body, que o Phaser não recolhe no shutdown da cena.
-        this.dialogo.campo.destruir();
+        if (this.dialogo.atalhos) {
+            this.input.keyboard.off('keydown-ENTER', this.dialogo.atalhos.onEnter);
+            this.input.keyboard.off('keydown-ESC', this.dialogo.atalhos.onEsc);
+        }
         this.dialogo.objetos.forEach(objeto => objeto.destroy());
         this.dialogo = null;
     }
 
-    criarPersonagem(classe, nomeDigitado) {
-        const nome = String(nomeDigitado ?? '').trim();
-        if (nome.length < NOME_MIN_CHARS) {
-            this.mostrarFeedback(`O nome precisa ter pelo menos ${NOME_MIN_CHARS} caracteres.`);
-            return;
-        }
-
+    // O nome NÃO vai no payload: quem decide é o servidor, a partir do token (create_character).
+    // Mandar um `nome` daqui seria ignorado — e passaria a impressão falsa de que o client
+    // escolhe.
+    criarPersonagem(classe) {
         this.fecharDialogo();
         this.statusText.setText('Criando personagem...');
 
         this.enviarAcao(
-            { type: 'create_character', classe, nome },
+            { type: 'create_character', classe },
             ['character_created', 'character_create_failed'],
             (resposta) => {
                 if (this.tratarAuthExpirada(resposta)) return;

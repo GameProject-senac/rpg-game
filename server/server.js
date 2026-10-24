@@ -103,12 +103,10 @@ const NIVEL_INICIAL = 1;
 // Ponto de nascimento: centro do mapa normal. O default do schema (100,100) fica encostado
 // no canto e em cima de um ponto fixo de spawn de inimigo (ENEMY_SPAWN_POINTS).
 const SPAWN_INICIAL = { x: 1000, y: 1000 };
-// Regras de nome (decisão do dono do projeto): 3 a 22 caracteres, números e caracteres
-// especiais permitidos. O limite de 22 é bem abaixo do varchar(50) da coluna, então o corte
-// é de regra, não de schema. Validado no SERVIDOR porque o nome vem de campo de texto do
-// client — entrada não confiável, a checagem do client é só conveniência de UI.
-const NOME_MIN_CHARS = 3;
-const NOME_MAX_CHARS = 22;
+// Não existe regra de nome de PERSONAGEM: ele não é digitado. O nome do personagem é o nome
+// da CONTA (ver create_character), então quem governa o formato é USUARIO_MIN/MAX_CHARS, no
+// cadastro. As antigas NOME_MIN_CHARS/NOME_MAX_CHARS foram removidas junto com o campo de
+// texto — se voltarem, é sinal de que alguém reabriu a digitação de nome sem querer.
 // (O teto de personagens é por CONTA — ver MAX_PERSONAGENS_POR_CONTA acima.)
 const XP_POR_DANO = 0.1; // XP = dano_efetivo × esta constante, pra TODO golpe (sem pico de abate — decisão do dono, comuns)
 
@@ -819,22 +817,22 @@ wss.on('connection', (ws) => {
                     return;
                 }
 
-                // Nome: entrada não confiável. Normaliza aqui (autoridade), não no client.
-                // Remove caracteres de controle, colapsa espaços e aparra as pontas; o que
-                // sobra é medido contra o mínimo/máximo. Números e caracteres especiais são
-                // permitidos de propósito, então NÃO há lista branca de caracteres.
-                const nome = String(data.nome ?? '')
-                    // eslint-disable-next-line no-control-regex
-                    .replace(/[\u0000-\u001F\u007F]/g, '')
-                    .replace(/\s+/g, ' ')
-                    .trim();
-                if (nome.length < NOME_MIN_CHARS || nome.length > NOME_MAX_CHARS) {
-                    ws.send(JSON.stringify({
-                        type: 'character_create_failed',
-                        message: `O nome precisa ter de ${NOME_MIN_CHARS} a ${NOME_MAX_CHARS} caracteres.`
-                    }));
-                    return;
-                }
+                // Nome do personagem = NOME DA CONTA, sempre (decisão do dono do projeto).
+                // Não vem mais do client: `data.nome` é ignorado de propósito. A identidade do
+                // jogador é a conta, então os personagens dela todos carregam esse nome e se
+                // distinguem por CLASSE e NÍVEL (que a tela de seleção já mostra).
+                //
+                // Vem de `sessao.usuario`, não de `data`, porque é a única fonte que o client
+                // não controla: `sessao` foi resolvida do token contra `jogadores.Nome`. Aceitar
+                // um nome do client abriria dois furos — personagem com nome de outra conta
+                // (falsa identidade na tela dos outros jogadores) e nome fora do par
+                // único/validado que o cadastro garante.
+                //
+                // Sem validação de tamanho aqui: USUARIO_MIN/MAX_CHARS (3-22) são iguais a
+                // NOME_MIN/MAX_CHARS, e o `register` já normalizou e validou o usuário antes de
+                // gravar — o valor vem do banco, não da rede. A unicidade é do banco
+                // (uq_jogadores_nome), então não existe nome de personagem órfão de conta.
+                const nome = sessao.usuario;
 
                 try {
                     // Teto POR CONTA (não global). Conta só os personagens do dono autenticado.
