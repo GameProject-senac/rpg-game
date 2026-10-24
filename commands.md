@@ -134,6 +134,35 @@ ALTER TABLE Itens ADD COLUMN slot_categoria VARCHAR(20) NULL
 Conferir no boot: o servidor imprime `[catalogo] N item(ns) sem slot_categoria` se algo ficou de fora. Silêncio
 significa que todos foram categorizados.
 
+### 8. Migração: `UNIQUE (jogadores_id)` em `personagens` (quem JÁ tem banco)
+
+⚠️ **Obrigatório para quem puxar este commit com um banco `jogo_pi` já existente.** A regra passou a ser **uma
+conta = UM personagem**, e ela mora no banco (não só num `if` do servidor) porque entre o `SELECT COUNT` e o
+`INSERT` existe janela de corrida — mesma família do `A01`/`B01` já corrigidos no `join`.
+
+* **Banco descartável / máquina nova:** reaplicar o passo 4 já resolve — a constraint entrou na `CREATE TABLE`.
+* **Banco com progresso a preservar:** o `ALTER TABLE` abaixo **falha com `ER_DUP_ENTRY`** se alguma conta já
+  tiver mais de um personagem (foi o caso medido: a conta `dreian` tinha dois `dreian`/`guerreiro`). Então
+  primeiro **encontre** as contas duplicadas, **escolha** qual personagem sobrevive e apague os outros — o
+  `DELETE` leva o inventário em cascata:
+
+```sql
+-- 1. quem está duplicado
+SELECT jogadores_id, COUNT(*) AS n, GROUP_CONCAT(id ORDER BY id) AS ids
+  FROM personagens GROUP BY jogadores_id HAVING n > 1;
+
+-- 2. apagar os excedentes (mantém o de MENOR id de cada conta — confira a lista antes)
+DELETE p FROM personagens p
+  JOIN (SELECT jogadores_id, MIN(id) AS manter FROM personagens GROUP BY jogadores_id) m
+    ON p.jogadores_id = m.jogadores_id AND p.id <> m.manter;
+
+-- 3. agora a constraint entra
+ALTER TABLE personagens ADD CONSTRAINT uq_personagem_por_conta UNIQUE (jogadores_id);
+```
+
+Conferir: `SHOW INDEX FROM personagens` tem que listar `uq_personagem_por_conta`. Depois disso, criar um segundo
+personagem na mesma conta é recusado pelo banco, e o servidor traduz o `ER_DUP_ENTRY` em mensagem de tela.
+
 ---
 
 ## Diagnóstico rápido

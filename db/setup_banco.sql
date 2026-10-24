@@ -152,6 +152,23 @@ CREATE TABLE personagens (
     posicao_y FLOAT DEFAULT 100.0,
     cena_atual VARCHAR(50) DEFAULT 'HubCentral',
     atualizado_em TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    -- UMA CONTA = UM PERSONAGEM (decisão do dono do projeto). A regra mora aqui, no banco,
+    -- e não só num `if` do servidor: entre o `SELECT COUNT` e o `INSERT` existe uma janela
+    -- de corrida — dois `create_character` da mesma conta em voo passam os dois pela
+    -- contagem e criam dois personagens. É a mesma família do A01/B01 já corrigidos em
+    -- `join`. Com a constraint, o 2º INSERT falha com ER_DUP_ENTRY e o servidor só precisa
+    -- traduzir o erro, sem checar nada antes (mesmo padrão que o `register` já usa pro nome
+    -- de conta duplicado).
+    --
+    -- Medido antes de existir: a conta `dreian` acumulou DOIS personagens
+    -- `dreian`/`guerreiro` de nível 1 — nome igual, classe igual, indistinguíveis na tela
+    -- de seleção, um deles morto.
+    --
+    -- Consequência de desenho: a classe é escolhida UMA vez. Trocar de classe exige o
+    -- reset, que APAGA o personagem (`reset_character`) — o `ON DELETE CASCADE` de
+    -- `inventario` leva os itens junto, então "nada persiste" é garantia do banco, não de
+    -- um UPDATE de zeramento que alguém pode esquecer de manter completo.
+    CONSTRAINT uq_personagem_por_conta UNIQUE (jogadores_id),
     CONSTRAINT fk_personagem_jogador FOREIGN KEY (jogadores_id) REFERENCES jogadores(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
