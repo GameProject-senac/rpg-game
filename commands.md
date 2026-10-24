@@ -63,8 +63,10 @@ mysql -u root -p -e "CREATE USER IF NOT EXISTS 'rpg_app'@'localhost' IDENTIFIED 
 
 ### 4. Schema
 
-⚠️ **`db/setup_banco.sql` é DESTRUTIVO** — a primeira linha é
-`DROP DATABASE IF EXISTS jogo_pi`. Sempre conferir o que existe ANTES:
+⚠️ **`db/setup_banco.sql` é DESTRUTIVO** — ele dropa DOIS bancos antes de
+recriar: `DROP DATABASE IF EXISTS rpg_game` (legado pré-A1, nenhum código
+atual usa) e `DROP DATABASE IF EXISTS jogo_pi`. Sempre conferir o que existe
+ANTES:
 
 ```bash
 mysql -u root -p -e "SHOW DATABASES LIKE 'jogo_pi';
@@ -144,6 +146,7 @@ significa que todos foram categorizados.
 | `Access denied for user 'rpg_app'` **mas a mesma senha funciona no CLI `mysql`** | `#` (ou outro especial) sem aspas no `server/.env` — o `dotenv` corta no `#` e trunca a senha. Aspear: `DB_PASSWORD="..."`. Ver AGENTS.md §00 |
 | `Access denied for user 'rpg_app'` (também pelo CLI) | `server/.env` ausente/senha errada, ou `GRANT` não aplicado (passos 3 e 5) |
 | `ERROR 1819 ... password does not satisfy the current policy` | política `validate_password` (MEDIUM): mín. 8 chars com maiúscula, minúscula, número e símbolo |
+| `Error Code: 1175 ... safe update mode` num `UPDATE Itens SET slot_categoria` | safe updates do Workbench barrando `WHERE nome IN (...)` (coluna sem índice). O script já traz `SET SQL_SAFE_UPDATES = 0` no topo — este erro significa que ele foi rodado **statement-by-statement** (⌘/Ctrl+Enter), que não executa a linha do topo. Rodar como script inteiro (⚡ *Execute Script*) ou pelo CLI. ⚠️ Deixa o banco quebrado no meio: `mobs`/`mob_drops` vazias e os 30 itens sem categoria — o servidor não sobe. Reaplicar o passo 4 inteiro |
 | `ERROR 1410 ... not allowed to create a user with GRANT` na última linha do setup | o usuário `rpg_app` não existia — o MySQL 8 não cria usuário via `GRANT`. Rodar o passo 3 ANTES do passo 4 (as tabelas são criadas normalmente; só o `GRANT` final falha) |
 | `ERROR 1044 Access denied for user 'rpg_app' to database 'jogo_pi'` na última linha do setup | o script foi rodado com o usuário da aplicação em vez de `root`: `rpg_app` tem `ALL PRIVILEGES ON jogo_pi.*` mas não tem `GRANT OPTION`, então só as duas últimas linhas falham. As 14 tabelas e os seeds entram normalmente e o `GRANT` era redundante — rodar como `root` (passo 4) ou ignorar |
 | Cadastro aceita usuário repetido / login do 2º dá "Usuário ou senha incorretos" | falta o `UNIQUE uq_jogadores_nome` neste banco (schema antigo, anterior à constraint). O `login` resolve sempre a linha de menor id, então o 2º cadastro cria uma conta inacessível. Corrigir reaplicando o passo 4, ou deduplicar e aplicar o `ALTER TABLE` |

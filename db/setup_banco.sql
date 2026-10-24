@@ -2,11 +2,32 @@
 -- setup_banco.sql — Kit de montagem portátil do banco jogo_pi
 -- FASE A / PASSO A1 — schema oficial + adições de Itens + dados mínimos
 --
--- ATENÇÃO: este script é DESTRUTIVO. A primeira linha apaga o banco
--- jogo_pi inteiro (se existir) e recria do zero. NÃO rode isto num banco
--- que tenha dados a preservar. É um kit de teste portátil, pensado pra
+-- ATENÇÃO: este script é DESTRUTIVO. Ele apaga DOIS bancos antes de
+-- recriar: o `jogo_pi` inteiro (se existir) e o legado `rpg_game`
+-- (pré-migração A1, não usado por nenhum código atual). NÃO rode isto num
+-- banco que tenha dados a preservar. É um kit de teste portátil, pensado pra
 -- rodar igual nos dois PCs (casa/curso) e sempre terminar no mesmo estado.
 -- =====================================================================
+
+-- O MySQL Workbench liga `safe updates` por padrão, e ele RECUSA todo UPDATE cujo WHERE não
+-- use coluna indexada: os 8 `UPDATE Itens SET slot_categoria ... WHERE nome IN (...)` do fim
+-- deste script filtram por `nome`, que não tem índice, e morrem com "Error Code: 1175".
+-- O estrago é silencioso e pior que uma falha limpa: as tabelas e os 30 itens entram, o
+-- script aborta no 1º UPDATE e o banco fica sem `mobs`/`mob_drops` e com os 30 itens sem
+-- categoria — aí o servidor se recusa a abrir a porta (ele exige mobs/mob_drops no boot) e
+-- o equipamento de armadura pararia, porque o slot vem da coluna. Pela linha de comando
+-- (`mysql -u root -p < este_arquivo`) o safe mode não existe e nada disto acontece; esta
+-- linha existe pra que rodar pelo Workbench dê o MESMO resultado. É escopo de SESSÃO: não
+-- altera configuração do servidor nem vaza pra outras conexões.
+SET SQL_SAFE_UPDATES = 0;
+
+-- Remove o legado pré-migração A1. O banco `rpg_game` ficou de antes da A1
+-- (3 tabelas com dados de teste de 2026-07-24) e NENHUM código atual o usa —
+-- `server/.env` aponta pra `jogo_pi`. Enquanto ele existir, uma máquina com o
+-- `.env` velho conecta num schema que não recebe mais migração e os sintomas
+-- ("Unknown column X", tabela vazia) parecem bug de código. §07 do AGENTS.md
+-- exige fonte única: dropar aqui garante que só `jogo_pi` sobrevive ao script.
+DROP DATABASE IF EXISTS rpg_game;
 
 DROP DATABASE IF EXISTS jogo_pi;
 CREATE DATABASE IF NOT EXISTS jogo_pi;
