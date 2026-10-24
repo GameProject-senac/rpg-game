@@ -268,7 +268,26 @@ export class ExploracaoCombate extends Phaser.Scene {
                 rp.hpGraphics.destroy();
                 if (rp.sprite) rp.sprite.destroy();
             });
-            if (this.socket) this.socket.close();
+            // DESLIGA os handlers antes de fechar — não basta `close()`.
+            //
+            // `close()` é assíncrono: só inicia o handshake, e o `onclose` dispara numa tarefa
+            // POSTERIOR. No scene.restart() da morte, o create() roda em seguida, de forma
+            // síncrona, e o initMultiplayer() zera `cenaEncerrando`. Quando o onclose do socket
+            // VELHO finalmente chegava, encontrava a flag já em false e chamava
+            // handleConnectionLost -> scene.start('SelecaoPersonagem').
+            //
+            // Era esse o bug de "morrer devolve pra tela de personagem em vez de renascer": a
+            // flag é uma proteção TEMPORAL para um problema POR-SOCKET, e por isso falhava só
+            // no restart (sair da cena normalmente não reseta a flag depois). Com os handlers
+            // nulos, o socket descartado não alcança mais a cena, qualquer que seja o timing —
+            // mesma forma do `encerrarSocket` da SelecaoPersonagem.
+            if (this.socket) {
+                this.socket.onopen = null;
+                this.socket.onmessage = null;
+                this.socket.onerror = null;
+                this.socket.onclose = null;
+                this.socket.close();
+            }
         });
     }
 
